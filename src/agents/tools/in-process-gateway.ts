@@ -320,6 +320,15 @@ async function callAgentToolGatewayRequestBound<T>(
   const dispatchOptions = {
     prepareDispatchCurrent: request.prepareDispatchCurrent,
     forceSyntheticClient: true,
+    // Hosted tools retain their admitted run after the initiating RPC disconnects.
+    ...(assertCallerCurrent
+      ? {
+          hasCurrentClientAuthority: () => {
+            assertCallerCurrent(method);
+            return true;
+          },
+        }
+      : {}),
     operatorRoleActor: { kind: "system" as const },
     ...(request.agentRunTracking ? { agentRunTracking: request.agentRunTracking } : {}),
     ...(request.agentToolCaller ? { agentToolCaller: request.agentToolCaller } : {}),
