@@ -320,8 +320,9 @@ async function callAgentToolGatewayRequestBound<T>(
   const dispatchOptions = {
     prepareDispatchCurrent: request.prepareDispatchCurrent,
     forceSyntheticClient: true,
-    // Hosted tools retain their admitted run after the initiating RPC disconnects.
-    ...(assertCallerCurrent
+    // Foreground tools retain their admitted run after the initiating RPC disconnects.
+    // Accepted child input instead retains its transferred source authority, not the parent run.
+    ...(assertCallerCurrent && !transfersCreatedInput
       ? {
           hasCurrentClientAuthority: () => {
             assertCallerCurrent(method);
