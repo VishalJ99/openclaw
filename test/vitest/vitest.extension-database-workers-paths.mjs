@@ -257,6 +257,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/codex/src/app-server/run-attempt-lifecycle-controller.test.ts",
   "extensions/codex/src/app-server/run-attempt-native-process-authority.test.ts",
   "extensions/codex/src/app-server/run-attempt-one-shot-cleanup.test.ts",
+  "extensions/codex/src/app-server/run-attempt-parent-retention.test.ts",
   "extensions/codex/src/app-server/run-attempt-thread-cleanup.test.ts",
   "extensions/codex/src/app-server/run-attempt.channel-tool-progress.test.ts",
   "extensions/codex/src/app-server/run-attempt.checkpoint.test.ts",

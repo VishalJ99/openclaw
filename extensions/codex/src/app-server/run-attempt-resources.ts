@@ -11,7 +11,10 @@ import {
   unsubscribeCodexThreadBestEffort,
 } from "./attempt-client-cleanup.js";
 import { resolveCodexStartupTimeoutMs } from "./attempt-timeouts.js";
-import { protectCodexAppServerLiveThread } from "./client-runtime.js";
+import {
+  isCodexAppServerLiveThreadProtected,
+  protectCodexAppServerLiveThread,
+} from "./client-runtime.js";
 import { resolveCodexAppServerClientInstanceId, type CodexAppServerClient } from "./client.js";
 import { shouldAutoApproveCodexAppServerApprovals } from "./config.js";
 import { CodexAppServerEventProjector } from "./event-projector.js";
@@ -394,12 +397,19 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   let subscriptionSettlement:
     | { thread: CodexAppServerThreadLifecycleBinding; retained: boolean }
     | undefined;
-  const retainThreadSubscription = async (): Promise<boolean> => {
+  const retainThreadSubscription = async (afterConfirmedCancellation = false): Promise<boolean> => {
     const { client, thread } = state;
     if (subscriptionSettlement?.thread === thread) {
       return subscriptionSettlement.retained;
     }
     if (!thread || thread.clientId !== resolveCodexAppServerClientInstanceId(client)) {
+      return false;
+    }
+    const hasNativeRetentionAuthority = () =>
+      nativeProcessAuthority?.hasCurrentProcesses(client, thread.threadId) ||
+      (afterConfirmedCancellation && isCodexAppServerLiveThreadProtected(client, thread.threadId));
+    // Cancellation may retain only a subscription still needed by native work.
+    if (afterConfirmedCancellation && !hasNativeRetentionAuthority()) {
       return false;
     }
     const { bindingStore, bindingIdentity } = connection;
@@ -424,7 +434,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
         }
         // Decide at publication, after lease and any row-admission wait.
         // Concrete native work may outlive the foreground row that created it.
-        if (!nativeProcessAuthority?.hasCurrentProcesses(client, thread.threadId)) {
+        if (!hasNativeRetentionAuthority()) {
           if (rowFailure) {
             throw rowFailure.error;
           }
@@ -444,7 +454,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
           ephemeralPolicy: thread.liveThreadEphemeralPolicy,
         });
       };
-      if (nativeProcessAuthority?.hasCurrentProcesses(client, thread.threadId)) {
+      if (hasNativeRetentionAuthority()) {
         publish();
       } else {
         try {
