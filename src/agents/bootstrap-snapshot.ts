@@ -61,7 +61,11 @@ export async function prepareBootstrapSnapshot(params: {
   if (!params.writer && (!fence || fence.expectedWriterRunId !== params.expectedWriterRunId)) {
     throw new Error("Workspace snapshot requires the current host transcript writer fence.");
   }
-  const target = withOwnedSessionTranscriptWriterFence(sourceTarget);
+  const target = {
+    ...withOwnedSessionTranscriptWriterFence(sourceTarget),
+    expectedWriterRunId: params.writer?.runId ?? fence?.expectedWriterRunId,
+    expectedLifecycleRevision: params.writer?.lifecycleRevision ?? fence?.expectedLifecycleRevision,
+  };
   const assertTranscript = captureOwnedTranscriptWriteAssertion(target);
   const workspaceDir = await realpath(params.workspaceDir);
   const executionWorkspaceDir = params.executionWorkspaceDir
@@ -79,14 +83,11 @@ export async function prepareBootstrapSnapshot(params: {
     assertTranscript();
     params.assertCurrent();
   };
-  const load = async (
-    refresh: boolean,
-    options?: { createIfMissing?: boolean },
-  ): Promise<BootstrapContext> => {
+  let hasSnapshot = false;
+  let pending: BootstrapContext | undefined;
+  const persist = async (context: BootstrapContext) => {
     assertCurrent();
     await params.writer?.assertReadable();
-    // The existing manager owns complete active-branch reads and account-aware
-    // async metadata appends, including actor-backed sessions and publication.
     const [{ SessionManager }, { withSessionManagerWriteAssertion }] = await Promise.all([
       import("./sessions/session-manager.js"),
       import("./sessions/session-manager-write-admission.js"),
@@ -94,8 +95,31 @@ export async function prepareBootstrapSnapshot(params: {
     assertCurrent();
     const manager = await SessionManager.openAsync(target, workspaceDir);
     assertCurrent();
+    await runWithCliHistoryWriter(params.writer, () =>
+      withSessionManagerWriteAssertion(manager, assertCurrent, () =>
+        manager.appendCustomEntryAsync(SNAPSHOT_TYPE, { scope, context }),
+      ),
+    );
+    assertCurrent();
+    hasSnapshot = true;
+  };
+  const load = async (
+    refresh: boolean,
+    options?: { createIfMissing?: boolean; deferCreate?: boolean },
+  ): Promise<BootstrapContext> => {
+    assertCurrent();
+    await params.writer?.assertReadable();
+    // Only this feature's metadata is consumed; message-history provenance is unchanged.
+    const { SessionManager } = await import("./sessions/session-manager.js");
+    assertCurrent();
+    const manager = await SessionManager.openAsync(target, workspaceDir);
+    assertCurrent();
+    const branch = manager.getBranch();
+    hasSnapshot ||= branch.some(
+      (entry) => entry.type === "custom" && entry.customType === SNAPSHOT_TYPE,
+    );
     if (!refresh) {
-      for (const entry of manager.getBranch().toReversed()) {
+      for (const entry of branch.toReversed()) {
         if (!isRecord(entry)) {
           continue;
         }
@@ -139,14 +163,26 @@ export async function prepareBootstrapSnapshot(params: {
         personalUser: file.personalUser,
       })),
     };
-    assertCurrent();
-    await runWithCliHistoryWriter(params.writer, () =>
-      withSessionManagerWriteAssertion(manager, assertCurrent, () =>
-        manager.appendCustomEntryAsync(SNAPSHOT_TYPE, { scope, context }),
-      ),
-    );
-    assertCurrent();
+    if (options?.deferCreate) {
+      pending = context;
+    } else {
+      await persist(context);
+    }
     return { ...context, contextFiles: params.render(context.bootstrapFiles) };
   };
-  return { load, scope };
+  return {
+    load,
+    scope,
+    target,
+    assertCurrent,
+    get hasSnapshot() {
+      return hasSnapshot;
+    },
+    async commit() {
+      if (pending) {
+        await persist(pending);
+        pending = undefined;
+      }
+    },
+  };
 }

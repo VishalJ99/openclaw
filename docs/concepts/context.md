@@ -332,7 +332,12 @@ stops dispatch until it can be retried.
 
 In managed Claude, the workspace block is delivered through private native lifecycle context instead
 of the stable system prompt. The first submitted input in a native process
-receives the saved snapshot. Native `SessionStart` with source `compact` awaits a
+receives the saved snapshot. Native subscription login needs no Anthropic API key:
+workspace metadata uses the admitted host transcript owner, independently of
+account-bound conversation-history reseeding. Existing unknown-provenance history
+stays unknown. On first enable, an existing native binding can retain its ID only
+when ordinary authentication, workspace and MCP reuse checks pass and no prior
+private workspace snapshot exists. Native `SessionStart` with source `compact` awaits a
 fresh snapshot and its durable write before returning context to the continuation.
 Changing the personal profile, audience, or full/lightweight context mode starts a
 fresh native session and recovers eligible conversation history from OpenClaw.

@@ -43,6 +43,7 @@ let firstInputUuid;
 let injectedContext;
 let injectedRerunContext;
 let compactContext;
+let compactRerunContext;
 const priorResponses = {};
 let credentialProof;
 let shutdownDescendant;
@@ -84,7 +85,7 @@ const nativeToolName = scenario === "user-question" ? "AskUserQuestion" : scenar
 const nativeToolInput = scenario === "user-question" ? questionInput : firstSeenBackground ? { command: "synthetic long command", run_in_background: explicitBackground } : { file_path: "fixture.txt" };
 const result = (detail = {}) => send({
   type: "result", subtype: "success", is_error: false,
-  result: JSON.stringify({ pid: process.pid, turn, user, privateContext, injectedRerunContext, compactContext, initialize, argv: process.argv.slice(2), ...detail }),
+  result: JSON.stringify({ pid: process.pid, turn, user, privateContext, injectedRerunContext, compactContext, compactRerunContext, initialize, argv: process.argv.slice(2), ...detail }),
   session_id: "fixture-session",
   ...(detail.injectedContext ? { user_message_uuid: pendingInputUuid } : {}),
   ...((!replayReceipts || scenario === "background-bash-overlap") && detail.finalBackgroundAnswer ? {
@@ -387,11 +388,17 @@ for await (const line of createInterface({ input: process.stdin })) {
       if (turn === 2) result({ lateDecision });
     } else if (id === "compact-context") {
       compactContext = response.hookSpecificOutput?.additionalContext;
+      if (scenario === "workspace-context-rerun") {
+        request("compact-rerun", { subtype: "hook_callback", callback_id: hooks.UserPromptSubmit[0].hookCallbackIds[0],
+          input: { hook_event_name: "UserPromptSubmit", prompt: user } });
+      } else { result(); }
+    } else if (id === "compact-rerun") {
+      compactRerunContext = response.hookSpecificOutput?.additionalContext;
       result();
     } else if (id === "prompt-" + turn) {
       privateContext = response.hookSpecificOutput?.additionalContext;
-      if (scenario === "workspace-context") {
-        if (turn === 2) {
+      if (scenario === "workspace-context" || scenario === "workspace-context-rerun") {
+        if (turn === 2 || scenario === "workspace-context-rerun") {
           request("compact-context", { subtype: "hook_callback", callback_id: hooks.SessionStart[0].hookCallbackIds[0],
             input: { hook_event_name: "SessionStart", source: "compact" } });
         } else { result(); }

@@ -187,10 +187,28 @@ describe("buildAttemptSystemPrompt", () => {
     bootstrap.contextFiles = files("FIRST_WORKSPACE_CONTEXT");
     const first = (await prepared.prepareToolPrompt([read]))(prepared.systemPromptText);
     expect(first).toContain("FIRST_WORKSPACE_CONTEXT");
+    expect(prepared.systemPromptReport.bootstrapTruncation?.truncatedFiles).toBe(0);
     bootstrap.contextFiles = files("FRESH_WORKSPACE_CONTEXT");
+    Object.assign(
+      bootstrap,
+      buildBootstrapBudgetState({
+        config: { agents: { defaults: { bootstrapMaxChars: 1000 } } },
+        files: [
+          {
+            name: "AGENTS.md",
+            path: "/tmp/openclaw/AGENTS.md",
+            missing: false,
+            rawChars: 10_000,
+            injectedChars: 1000,
+            truncated: true,
+          },
+        ],
+      }),
+    );
     const next = (await prepared.prepareToolPrompt([read]))(first);
     expect(next).toContain("FRESH_WORKSPACE_CONTEXT");
     expect(next).not.toContain("FIRST_WORKSPACE_CONTEXT");
+    expect(prepared.systemPromptReport.bootstrapTruncation?.truncatedFiles).toBe(1);
     attempt.permissionMode = "read-only";
     capabilityToolNames.delete("write");
     const refresh = await prepared.prepareToolPrompt([read], { permissionChanged: true });

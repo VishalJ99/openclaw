@@ -215,6 +215,9 @@ async function handleRequest(
       throw new Error("OpenClaw run closed while refreshing workspace context.");
     }
     session.workspaceContextInjected = true;
+    if (source === "compact") {
+      lifecycleTurn.workspaceContext = undefined;
+    }
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } };
   }
   if (request.callback_id === "UserPromptSubmit" && input.hook_event_name === "UserPromptSubmit") {

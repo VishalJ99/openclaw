@@ -6,8 +6,12 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import { runWithCliHistoryWriter } from "../../config/sessions/cli-history-boundary.js";
-import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import {
+  patchSessionEntryCore,
+  loadSessionEntryReadOnly,
+} from "../../config/sessions/session-accessor.js";
 import { stageSessionPendingInput } from "../../config/sessions/session-accessor.pending-inputs.js";
+import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import { setActiveNodeContexts } from "../../infra/active-node-context.js";
 import type { CliBackendExecuteContext } from "../../plugins/cli-backend.types.js";
 import * as globalHooks from "../../plugins/hook-runner-global.js";
@@ -105,6 +109,127 @@ describe("CLI durable session context", () => {
       await fixture.cleanup();
       clearRuntimeConfigSnapshot();
     }
+  });
+
+  it("prestamps a legacy native binding before snapshot persistence and retries without adopting history", async () => {
+    const backend = {
+      ...buildDefaultTestCliBackend(),
+      id: "claude-cli",
+      config: { ...buildDefaultTestCliBackend().config, input: "stdin" as const },
+      prepareExecution: () => ({
+        async *execute() {
+          yield { type: "result" };
+        },
+      }),
+    };
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [backend],
+    });
+    let content = "LEGACY_WORKSPACE_FIRST";
+    setCliRunnerPrepareTestDeps({
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [{ name: "AGENTS.md", path: "AGENTS.md", content, missing: false }],
+        contextFiles: [{ path: "AGENTS.md", content }],
+      }),
+      claudeCliSessionTranscriptHasContent: async () => true,
+      claudeCliSessionTranscriptHasOrphanedToolUse: async () => false,
+    });
+    fixture.appendTranscript({
+      id: "legacy-input",
+      parentId: null,
+      timestamp: new Date(1).toISOString(),
+      message: { role: "user", content: "LEGACY_PRIVATE_HISTORY", timestamp: 1 },
+    });
+    const baseline = await fixture.prepare({ provider: "claude-cli" });
+    cleanups.push(() => baseline.preparedBackend.cleanup?.());
+    const binding = {
+      sessionId: "existing-native-id",
+      authProfileId: baseline.effectiveAuthProfileId,
+      authEpoch: baseline.authEpoch,
+      authEpochVersion: baseline.authEpochVersion,
+      extraSystemPromptHash: baseline.extraSystemPromptHash,
+      messageToolPolicyHash: baseline.messageToolPolicyHash,
+      promptToolNamesHash: baseline.promptToolNamesHash,
+      cwdHash: baseline.cwdHash,
+      mcpConfigHash: baseline.preparedBackend.mcpConfigHash,
+      mcpResumeHash: baseline.preparedBackend.mcpResumeHash,
+    };
+    const target = fixture.session.sessionTarget;
+    await patchSessionEntryCore(target, (entry) => {
+      setCliSessionBinding(entry, "claude-cli", binding);
+      return entry;
+    });
+    let attempt = 0;
+    const prepare = async () => {
+      const runId = `host-legacy-${++attempt}`;
+      await patchSessionEntryCore(target, (entry) => ({ ...entry, activeWriterRunId: runId }));
+      return await withOwnedSessionTranscriptWrites(
+        {
+          sessionTarget: { ...target, expectedWriterRunId: runId },
+          withTranscriptWrite: async (run) => await run(),
+        },
+        async () => {
+          const prepared = await fixture.prepare({
+            runId,
+            expectedWriterRunId: runId,
+            provider: "claude-cli",
+            sessionKey: target.sessionKey,
+            cliSessionBinding: getCliSessionBinding(loadSessionEntryReadOnly(target), "claude-cli"),
+            config: { agents: { defaults: { workspaceContextRefresh: "compaction" } } },
+          });
+          cleanups.push(() => prepared.preparedBackend.cleanup?.());
+          return prepared;
+        },
+      );
+    };
+    const append = vi
+      .spyOn(SessionManager.prototype, "appendCustomEntryAsync")
+      .mockRejectedValueOnce(new Error("snapshot persistence failed"));
+    await expect(prepare()).rejects.toThrow("snapshot persistence failed");
+    append.mockRestore();
+    const stamped = getCliSessionBinding(loadSessionEntryReadOnly(target), "claude-cli");
+    expect(stamped?.sessionId).toBe("existing-native-id");
+    expect(stamped?.workspaceContextScopeHash).toBeTruthy();
+    expect(loadSessionEntryReadOnly(target)?.cliHistoryBoundary).toBeUndefined();
+    const retry = await prepare();
+    expect(retry.reusableCliSession).toMatchObject({ sessionId: "existing-native-id" });
+    expect(retry.cliHistoryWriter).toBeUndefined();
+    expect(retry.openClawHistoryPrompt ?? "").not.toContain("LEGACY_PRIVATE_HISTORY");
+    expect(await retry.workspaceContext?.("resume")).toContain("LEGACY_WORKSPACE_FIRST");
+    content = "LEGACY_WORKSPACE_SECOND";
+    const restarted = await prepare();
+    expect(restarted.reusableCliSession).toMatchObject({ sessionId: "existing-native-id" });
+    expect(await restarted.workspaceContext?.("resume")).toContain("LEGACY_WORKSPACE_FIRST");
+    expect(await restarted.workspaceContext?.("compact")).toContain("LEGACY_WORKSPACE_SECOND");
+    expect(loadSessionEntryReadOnly(target)?.cliHistoryBoundary).toBeUndefined();
+    const manager = await SessionManager.openAsync(target, fixture.session.dir);
+    await withOwnedSessionTranscriptWrites(
+      {
+        sessionTarget: { ...target, expectedWriterRunId: `host-legacy-${attempt}` },
+        withTranscriptWrite: async (write) => await write(),
+      },
+      async () => {
+        const message = await manager.appendMessageAsync({
+          role: "user",
+          content: "Before compact",
+          timestamp: 2,
+        });
+        await manager.appendCompactionAsync("Summary", message, 100);
+      },
+    );
+    await patchSessionEntryCore(target, (entry) => {
+      setCliSessionBinding(entry, "claude-cli", {
+        ...stamped!,
+        workspaceContextScopeHash: undefined,
+      });
+      return entry;
+    });
+    const previouslyPrivate = await prepare();
+    expect(previouslyPrivate.reusableCliSession).toEqual({
+      mode: "invalidate",
+      invalidatedReason: "workspace-context",
+    });
   });
 
   it("keeps workspace bytes out of the stable system and recovers the durable snapshot across preparation", async () => {

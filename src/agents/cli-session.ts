@@ -243,6 +243,7 @@ export function resolveCliSessionReuse(params: {
   authEpoch?: string;
   authEpochVersion: number;
   workspaceContextScopeHash?: string;
+  allowWorkspaceContextAdoption?: boolean;
   extraSystemPromptHash?: string;
   messageToolPolicyHash?: string;
   promptToolNamesHash?: string;
@@ -259,7 +260,13 @@ export function resolveCliSessionReuse(params: {
   // attached sessions cannot cross owner/audience/context-mode boundaries.
   if (
     normalizeOptionalString(binding?.workspaceContextScopeHash) !==
-    normalizeOptionalString(params.workspaceContextScopeHash)
+      normalizeOptionalString(params.workspaceContextScopeHash) &&
+    !(
+      params.allowWorkspaceContextAdoption === true &&
+      !binding?.forceReuse &&
+      !binding?.workspaceContextScopeHash &&
+      params.workspaceContextScopeHash
+    )
   ) {
     return { mode: "invalidate", invalidatedReason: "workspace-context" };
   }

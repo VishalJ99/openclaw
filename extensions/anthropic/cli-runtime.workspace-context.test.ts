@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 async function createContext(
-  _scenario: string,
+  scenario: string,
   overrides: Partial<CliBackendExecuteContext>,
 ): Promise<CliBackendExecuteContext> {
   // A real subprocess speaks the managed protocol; no model or user state is used.
@@ -37,7 +37,7 @@ async function createContext(
       PATH: process.env.PATH ?? "",
       HOME: root,
       CLAUDE_CONFIG_DIR: root,
-      CLAUDE_FIXTURE_SCENARIO: "workspace-context",
+      CLAUDE_FIXTURE_SCENARIO: scenario,
     },
     prompt: "synthetic input",
     systemPrompt: "stable operator policy",
@@ -81,6 +81,17 @@ describe("Claude workspace lifecycle context", () => {
     expect(second.privateContext).toBeUndefined();
     expect(second.compactContext).toBe("FRESH_WORKSPACE");
     expect(workspaceContext.mock.calls).toEqual([["startup"], ["compact"]]);
+  });
+
+  it("does not replay precompact files when native rewrites the same submitted input", async () => {
+    const context = await createContext("workspace-context-rerun", {
+      workspaceContext: async (source) =>
+        source === "compact" ? "FRESH_WORKSPACE" : "SAVED_WORKSPACE",
+    });
+    const output = resultDetail(await collect(context));
+    expect(output.privateContext).toBe("SAVED_WORKSPACE");
+    expect(output.compactContext).toBe("FRESH_WORKSPACE");
+    expect(output.compactRerunContext).toBeUndefined();
   });
 
   it("aborts the native process when required workspace persistence fails", async () => {

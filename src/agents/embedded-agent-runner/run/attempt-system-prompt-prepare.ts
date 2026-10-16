@@ -472,6 +472,11 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
             systemPromptReport,
             buildSystemPromptReport({
               ...reportInputs,
+              bootstrapTruncation: buildBootstrapTruncationReportMeta({
+                analysis: params.bootstrap.bootstrapAnalysis,
+                warningMode: params.bootstrap.bootstrapPromptWarningMode,
+                warning: params.bootstrap.bootstrapPromptWarning,
+              }),
               injectedWorkspaceFiles: params.bootstrap.bootstrapInjectionStats,
               generatedAt: Date.now(),
               systemPrompt,

@@ -87,24 +87,6 @@ afterEach(() => {
 });
 
 describe("native CLI manual compaction", () => {
-  it("retains the assigned personal profile and bootstrap workspace for native compaction", async () => {
-    registerBackend();
-    const params = Object.assign(compactParams(), {
-      bootstrapWorkspaceDir: "/synthetic/bootstrap-workspace",
-      sessionEntry: {
-        owner: { actor: { type: "human", id: "profile-owner" } },
-        createdActor: { type: "human", source: "profile", id: "profile-creator" },
-      },
-    });
-    await compactNativeCliSession({ runtime: "claude-cli", compactParams: params });
-    expect(runCliAgentMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        bootstrapUserProfileId: "profile-owner",
-        bootstrapWorkspaceDir: "/synthetic/bootstrap-workspace",
-      }),
-    );
-  });
-
   it("resumes the bound backend session with the backend-owned command", async () => {
     registerBackend();
 

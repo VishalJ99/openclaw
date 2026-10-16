@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { ensureSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
@@ -7,6 +8,7 @@ import {
 } from "../../auto-reply/source-reply-delivery-mode.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
+import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   assertContextEngineHostSupport,
@@ -82,7 +84,12 @@ import {
   resolveCliAuthEpoch,
 } from "../cli-auth-epoch.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
-import { hashCliSessionText, resolveCliSessionReuse } from "../cli-session.js";
+import {
+  getCliSessionBinding,
+  setCliSessionBinding,
+  hashCliSessionText,
+  resolveCliSessionReuse,
+} from "../cli-session.js";
 import {
   claudeCliSessionTranscriptHasContent,
   claudeCliSessionTranscriptHasOrphanedToolUse,
@@ -709,11 +716,10 @@ async function prepareCliRunContextWithinReadFence(
     snapshotWriter = await prepareCliHistoryBoundary(snapshotParams, {
       credential: authCredential,
     });
-    if (!snapshotWriter) {
-      throw new Error("Durable workspace context requires an admitted transcript writer.");
-    }
     snapshotOwner = await prepareBootstrapSnapshot({
       writer: snapshotWriter,
+      target: snapshotParams.sessionTarget,
+      expectedWriterRunId: snapshotParams.expectedWriterRunId ?? snapshotParams.runId,
       workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
       profileId: params.bootstrapUserProfileId,
       audience: runtimeChatType,
@@ -731,7 +737,7 @@ async function prepareCliRunContextWithinReadFence(
     });
   }
   const { bootstrapFiles, contextFiles: resolvedContextFiles } = snapshotOwner
-    ? await snapshotOwner.load(false, { createIfMissing: !isControlOperation })
+    ? await snapshotOwner.load(false, { createIfMissing: !isControlOperation, deferCreate: true })
     : skipsTurnPreparation
       ? { bootstrapFiles: [], contextFiles: [] }
       : await loadWorkspaceContext();
@@ -1358,6 +1364,14 @@ async function prepareCliRunContextWithinReadFence(
         "Native compaction cannot cross workspace context scopes; run a regular turn first.",
       );
     }
+    const allowWorkspaceContextAdoption = Boolean(
+      snapshotOwner &&
+      !snapshotOwner.hasSnapshot &&
+      !isControlOperation &&
+      params.cliSessionBinding &&
+      !params.cliSessionBinding.forceReuse &&
+      !params.cliSessionBinding.workspaceContextScopeHash,
+    );
     const reusableCliSessionCandidate: CliReusableSession = ignoreCliSessionCandidate
       ? { mode: "none" }
       : controlOperationCliSessionId
@@ -1369,6 +1383,7 @@ async function prepareCliRunContextWithinReadFence(
               authEpoch,
               authEpochVersion: CLI_AUTH_EPOCH_VERSION,
               workspaceContextScopeHash,
+              allowWorkspaceContextAdoption,
               extraSystemPromptHash,
               messageToolPolicyHash,
               promptToolNamesHash,
@@ -1432,6 +1447,40 @@ async function prepareCliRunContextWithinReadFence(
       ? { mode: "invalidate", invalidatedReason: claudeCliInvalidatedReason }
       : backendReusableCliSession;
     const reusableCliSessionId = resolveCliSessionId(reusableCliSession);
+    if (
+      allowWorkspaceContextAdoption &&
+      reusableCliSessionId &&
+      snapshotOwner &&
+      params.sessionTarget
+    ) {
+      const binding = params.cliSessionBinding!;
+      const assertCurrent = snapshotOwner.assertCurrent;
+      const committed = await patchSessionEntryCore(
+        snapshotOwner.target,
+        (current) => {
+          assertCurrent();
+          if (
+            current.sessionId !== params.sessionId ||
+            current.activeWriterRunId !==
+              (snapshotWriter?.runId ?? snapshotOwner.target.expectedWriterRunId) ||
+            current.lifecycleRevision !==
+              (snapshotWriter?.lifecycleRevision ??
+                snapshotOwner.target.expectedLifecycleRevision) ||
+            !isDeepStrictEqual(getCliSessionBinding(current, params.provider), binding)
+          ) {
+            throw new Error("Native binding changed before workspace context adoption.");
+          }
+          setCliSessionBinding(current, params.provider, { ...binding, workspaceContextScopeHash });
+          return current;
+        },
+        { preserveActivity: true, skipMaintenance: true, assertCommitAllowed: assertCurrent },
+      );
+      if (!committed) {
+        throw new Error("Native binding disappeared before workspace context adoption.");
+      }
+      params = { ...params, cliSessionBinding: { ...binding, workspaceContextScopeHash } };
+    }
+    await snapshotOwner?.commit();
     const invalidatedReason =
       reusableCliSession.mode === "invalidate" ? reusableCliSession.invalidatedReason : undefined;
     if (invalidatedReason) {

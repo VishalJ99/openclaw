@@ -221,6 +221,45 @@ describe("cli-session helpers", () => {
     },
   );
 
+  it.each([
+    { reason: "auth-epoch", changes: { authEpoch: "different" } },
+    { reason: "cwd", changes: { cwdHash: "different" } },
+    { reason: "mcp", changes: { mcpConfigHash: "different" } },
+  ])("keeps $reason checks when adopting a first workspace scope", ({ reason, changes }) => {
+    const current = {
+      authEpochVersion: 7,
+      authEpoch: "epoch",
+      cwdHash: "cwd",
+      mcpConfigHash: "mcp",
+    };
+    const binding = { sessionId: "native", ...current };
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        ...current,
+        workspaceContextScopeHash: "scope",
+        allowWorkspaceContextAdoption: true,
+      }),
+    ).toEqual({ mode: "reuse", sessionId: "native" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        ...current,
+        ...changes,
+        workspaceContextScopeHash: "scope",
+        allowWorkspaceContextAdoption: true,
+      }),
+    ).toEqual({ mode: "invalidate", invalidatedReason: reason });
+    expect(
+      resolveCliSessionReuse({
+        binding: { ...binding, forceReuse: true },
+        ...current,
+        workspaceContextScopeHash: "scope",
+        allowWorkspaceContextAdoption: true,
+      }),
+    ).toEqual({ mode: "invalidate", invalidatedReason: "workspace-context" });
+  });
+
   it("preserves native history for the same workspace scope despite changed Markdown", () => {
     expect(
       resolveCliSessionReuse({
