@@ -115,9 +115,9 @@ export async function prepareBootstrapSnapshot(params: {
     const manager = await SessionManager.openAsync(target, workspaceDir);
     assertCurrent();
     const branch = manager.getBranch();
-    hasSnapshot ||= branch.some(
-      (entry) => entry.type === "custom" && entry.customType === SNAPSHOT_TYPE,
-    );
+    hasSnapshot ||= manager
+      .getEntries()
+      .some((entry) => entry.type === "custom" && entry.customType === SNAPSHOT_TYPE);
     if (!refresh) {
       for (const entry of branch.toReversed()) {
         if (!isRecord(entry)) {

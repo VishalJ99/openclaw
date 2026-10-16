@@ -9,6 +9,7 @@ import {
 import { getRuntimeConfig } from "../../config/config.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   assertContextEngineHostSupport,
@@ -148,7 +149,7 @@ import {
   unsupportedIsolatedCompletionError,
 } from "./execution-target.js";
 import { isClaudeCliBackendId, normalizeCliModel } from "./helpers.js";
-import { prepareCliHistoryBoundary } from "./history-boundary.js";
+import { prepareCliHistoryBoundary, prepareCliTranscriptWriter } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
 import { mintCliMcpClientGrant } from "./mcp-client-grant.js";
 import { buildCliMcpGrantContext } from "./mcp-grant-context.js";
@@ -712,29 +713,41 @@ async function prepareCliRunContextWithinReadFence(
   let snapshotWriter: Awaited<ReturnType<typeof prepareCliHistoryBoundary>>;
   if (lifecycleWorkspaceContext) {
     const snapshotParams = await admitCliRunParams(params, workspaceResolution.agentId);
-    params = snapshotParams;
-    snapshotWriter = await prepareCliHistoryBoundary(snapshotParams, {
+    const transcriptOwner = await prepareCliTranscriptWriter(snapshotParams);
+    const ownedSnapshotParams = {
+      ...snapshotParams,
+      sessionTarget: transcriptOwner.target,
+      expectedWriterRunId: transcriptOwner.target.expectedWriterRunId,
+      expectedLifecycleRevision: transcriptOwner.target.expectedLifecycleRevision,
+    };
+    params = ownedSnapshotParams;
+    snapshotWriter = await prepareCliHistoryBoundary(ownedSnapshotParams, {
       credential: authCredential,
     });
-    snapshotOwner = await prepareBootstrapSnapshot({
-      writer: snapshotWriter,
-      target: snapshotParams.sessionTarget,
-      expectedWriterRunId: snapshotParams.expectedWriterRunId ?? snapshotParams.runId,
-      workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
-      profileId: params.bootstrapUserProfileId,
-      audience: runtimeChatType,
-      contextMode: params.bootstrapContextMode,
-      assertCurrent: () => {
-        params.assertCurrent?.();
-        params.abortSignal?.throwIfAborted();
-      },
-      load: loadWorkspaceContext,
-      render: (files) =>
-        buildBootstrapContextForFiles(files, {
-          config: params.config,
-          agentId: sessionAgentId,
+    snapshotOwner = await withSessionTranscriptWriteAssertion(
+      transcriptOwner.target,
+      transcriptOwner.assertCurrent,
+      () =>
+        prepareBootstrapSnapshot({
+          writer: snapshotWriter,
+          target: transcriptOwner.target,
+          expectedWriterRunId: transcriptOwner.target.expectedWriterRunId,
+          workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
+          profileId: params.bootstrapUserProfileId,
+          audience: runtimeChatType,
+          contextMode: params.bootstrapContextMode,
+          assertCurrent: () => {
+            params.assertCurrent?.();
+            params.abortSignal?.throwIfAborted();
+          },
+          load: loadWorkspaceContext,
+          render: (files) =>
+            buildBootstrapContextForFiles(files, {
+              config: params.config,
+              agentId: sessionAgentId,
+            }),
         }),
-    });
+    );
   }
   const { bootstrapFiles, contextFiles: resolvedContextFiles } = snapshotOwner
     ? await snapshotOwner.load(false, { createIfMissing: !isControlOperation, deferCreate: true })

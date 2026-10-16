@@ -18,6 +18,7 @@ import * as globalHooks from "../../plugins/hook-runner-global.js";
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import { saveAuthProfileStore } from "../auth-profiles/store-runtime.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
+import { runCliAgent } from "../cli-runner.js";
 import {
   buildDefaultTestCliBackend,
   createCliRunnerPrepareFixture,
@@ -25,6 +26,7 @@ import {
 import { setCliSessionBinding, getCliSessionBinding } from "../cli-session.js";
 import { buildBootstrapContextForFiles } from "../embedded-agent-helpers/bootstrap.js";
 import * as maintenance from "../embedded-agent-runner/context-engine-maintenance.js";
+import { withAdmittedCliCandidate } from "../embedded-agent-runner/run-entry-cli.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { executePreparedCliRun } from "./execute.js";
 import { prepareCliRunContext } from "./prepare.js";
@@ -108,6 +110,149 @@ describe("CLI durable session context", () => {
       cliBackendsTesting.resetDepsForTest();
       await fixture.cleanup();
       clearRuntimeConfigSnapshot();
+    }
+  });
+
+  it("claims metadata ownership through the actual admitted CLI entry without an injected scope", async () => {
+    const target = fixture.session.sessionTarget;
+    const config = { agents: { defaults: { workspaceContextRefresh: "compaction" as const } } };
+    setRuntimeConfigSnapshot(config);
+    let content = "ENTRY_FIRST";
+    let executions = 0;
+    const delivered: string[] = [];
+    let retained: CliBackendExecuteContext["workspaceContext"];
+    const backend = {
+      ...buildDefaultTestCliBackend(),
+      id: "claude-cli",
+      modelProvider: "test-cli",
+      config: {
+        ...buildDefaultTestCliBackend().config,
+        command: process.execPath,
+        output: "json" as const,
+      },
+      prepareExecution: () => ({
+        async *execute(context: CliBackendExecuteContext) {
+          retained = context.workspaceContext;
+          delivered.push((await retained?.("resume")) ?? "MISSING");
+          if (++executions === 2) {
+            delivered.push((await retained?.("compact")) ?? "MISSING");
+          }
+          yield { type: "result", subtype: "success", result: "complete" };
+        },
+      }),
+    };
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [backend],
+    });
+    setCliRunnerPrepareTestDeps({
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [{ name: "AGENTS.md", path: "AGENTS.md", content, missing: false }],
+        contextFiles: [{ path: "AGENTS.md", content }],
+      }),
+    });
+    const run = async (runId: string, beforeRun?: () => Promise<void>) => {
+      const admission = prepareSystemAgentRunAdmission(config, runId, "main", "cli-entry-test");
+      try {
+        return await withAdmittedCliCandidate(
+          {
+            claim: {
+              agentId: "main",
+              sessionId: target.sessionId,
+              sessionKey: target.sessionKey,
+              runId,
+            },
+            admission: { preparedRunAdmission: admission },
+            provider: "claude-cli",
+            sessionTarget: target,
+            expectedLifecycleRevision: loadSessionEntryReadOnly(target)?.lifecycleRevision,
+            readMode: "read-only",
+            getSessionEntry: () => loadSessionEntryReadOnly(target),
+          },
+          async ({ sessionEntry, assertSettlementCurrent }) => {
+            await beforeRun?.();
+            return runCliAgent({
+              sessionId: target.sessionId,
+              sessionKey: target.sessionKey,
+              sessionTarget: target,
+              sessionEntry,
+              storePath: target.storePath,
+              sessionFile: fixture.session.sessionFile,
+              workspaceDir: fixture.session.dir,
+              prompt: "latest ask",
+              provider: "claude-cli",
+              model: "test-model",
+              timeoutMs: 1000,
+              runId,
+              config,
+              skillsSnapshot: { prompt: "", skills: [] },
+              preparedRunAdmission: admission,
+              assertCurrent: assertSettlementCurrent,
+              persistAssistantTranscript: true,
+            });
+          },
+        );
+      } finally {
+        admission.close();
+      }
+    };
+    expect(
+      (await run("entry-first")).payloads?.some((payload) => payload.text === "complete"),
+    ).toBe(true);
+    expect(delivered[0]).toContain("ENTRY_FIRST");
+    await expect(retained?.("compact")).rejects.toThrow();
+    content = "ENTRY_SECOND";
+    expect(
+      (await run("entry-second")).payloads?.some((payload) => payload.text === "complete"),
+    ).toBe(true);
+    expect(delivered[1]).toContain("ENTRY_FIRST");
+    expect(delivered[2]).toContain("ENTRY_SECOND");
+    expect(loadSessionEntryReadOnly(target)).toMatchObject({ activeWriterRunId: "entry-second" });
+    expect(loadSessionEntryReadOnly(target)?.cliHistoryBoundary).toBeUndefined();
+    const messages = (await SessionManager.openAsync(target, fixture.session.dir)).getEntries();
+    expect(messages.filter((entry) => entry.type === "message")).toHaveLength(2);
+    expect(JSON.stringify(messages)).toContain("complete");
+    const inheritedTarget = {
+      ...target,
+      storePath: path.join(fixture.session.dir, "agents", "main", "sessions", "sessions.json"),
+      expectedWriterRunId: "entry-inherited",
+    };
+    await patchSessionEntryCore(target, () => ({ activeWriterRunId: "entry-inherited" }));
+    const inherited = await withOwnedSessionTranscriptWrites(
+      { sessionTarget: inheritedTarget, withTranscriptWrite: async (write) => await write() },
+      () =>
+        fixture.prepare({
+          runId: "entry-inherited",
+          provider: "claude-cli",
+          sessionKey: target.sessionKey,
+          sessionTarget: inheritedTarget,
+          sessionEntry: loadSessionEntryReadOnly(target),
+          config,
+        }),
+    );
+    cleanups.push(() => inherited.preparedBackend.cleanup?.());
+    expect(inherited.params.sessionTarget?.storePath).toBe(inheritedTarget.storePath);
+    expect(await inherited.workspaceContext?.("resume")).toContain("ENTRY_SECOND");
+    await expect(
+      run("entry-stale", async () => {
+        await patchSessionEntryCore(target, () => ({ lifecycleRevision: "reset-after-admission" }));
+      }),
+    ).rejects.toThrow("CLI transcript owner changed");
+    const foreign = prepareSystemAgentRunAdmission(
+      config,
+      "foreign-writer",
+      "main",
+      "foreign-test",
+    );
+    try {
+      await foreign.admit("embedded");
+      await patchSessionEntryCore(target, () => ({ activeWriterRunId: "foreign-writer" }));
+      await expect(run("entry-foreign")).rejects.toThrow("CLI transcript owner is still active");
+      expect(loadSessionEntryReadOnly(target)).toMatchObject({
+        activeWriterRunId: "foreign-writer",
+      });
+    } finally {
+      foreign.close();
     }
   });
 
