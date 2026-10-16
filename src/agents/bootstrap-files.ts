@@ -65,6 +65,20 @@ export function resolveContextInjectionMode(
   return config?.agents?.defaults?.contextInjection ?? "always";
 }
 
+/** Workspace content cadence is independent of whether a runtime injects context. */
+export function resolveWorkspaceContextRefresh(
+  config?: OpenClawConfig,
+  agentId?: string,
+): "every-turn" | "compaction" {
+  return (
+    (config && agentId
+      ? resolveAgentConfig(config, agentId)?.workspaceContextRefresh
+      : undefined) ??
+    config?.agents?.defaults?.workspaceContextRefresh ??
+    "every-turn"
+  );
+}
+
 /** Checks the active SQLite transcript branch for a valid full-bootstrap marker. */
 export async function hasCompletedBootstrapTurn(
   sessionTarget?: AgentRunSessionTarget,
@@ -285,6 +299,8 @@ type BootstrapFileResolutionParams = {
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
   readOnlyState?: boolean;
+  /** A lifecycle-capable harness owns durable snapshots and invokes fresh boundary loads. */
+  lifecycleWorkspaceContext?: boolean;
 };
 
 // Diagnostics project declared files without executing registered hook handlers.
@@ -300,6 +316,12 @@ export async function resolveBootstrapFilesForPreparation(
 export async function resolveBootstrapFilesForRun(
   params: BootstrapFileResolutionParams,
 ): Promise<WorkspaceBootstrapFile[]> {
+  if (
+    resolveWorkspaceContextRefresh(params.config, params.agentId) === "compaction" &&
+    !params.lifecycleWorkspaceContext
+  ) {
+    throw new Error("workspaceContextRefresh=compaction requires the managed Claude CLI harness.");
+  }
   return resolveBootstrapFiles(params, "registered");
 }
 

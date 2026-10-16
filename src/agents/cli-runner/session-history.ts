@@ -69,6 +69,7 @@ type RawTranscriptReseedReason =
   | "auth-unknown"
   | "auth-profile"
   | "auth-epoch"
+  | "workspace-context"
   | "message-policy"
   | "system-prompt"
   | "cwd"

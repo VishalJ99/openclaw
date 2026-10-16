@@ -1,4 +1,14 @@
+import type { CliBackendExecuteContext } from "openclaw/plugin-sdk/cli-backend";
 import { expect } from "vitest";
+import { executeClaudeCli } from "./cli.runtime.js";
+
+export async function collect(context: CliBackendExecuteContext) {
+  const records: Record<string, unknown>[] = [];
+  for await (const record of executeClaudeCli(context)) {
+    records.push(record);
+  }
+  return records;
+}
 
 export function resultDetail(records: Record<string, unknown>[]): Record<string, unknown> {
   const result = records.findLast((record) => record.type === "result");
@@ -32,6 +42,7 @@ let pendingInputUuid;
 let firstInputUuid;
 let injectedContext;
 let injectedRerunContext;
+let compactContext;
 const priorResponses = {};
 let credentialProof;
 let shutdownDescendant;
@@ -73,7 +84,7 @@ const nativeToolName = scenario === "user-question" ? "AskUserQuestion" : scenar
 const nativeToolInput = scenario === "user-question" ? questionInput : firstSeenBackground ? { command: "synthetic long command", run_in_background: explicitBackground } : { file_path: "fixture.txt" };
 const result = (detail = {}) => send({
   type: "result", subtype: "success", is_error: false,
-  result: JSON.stringify({ pid: process.pid, turn, user, privateContext, injectedRerunContext, initialize, argv: process.argv.slice(2), ...detail }),
+  result: JSON.stringify({ pid: process.pid, turn, user, privateContext, injectedRerunContext, compactContext, initialize, argv: process.argv.slice(2), ...detail }),
   session_id: "fixture-session",
   ...(detail.injectedContext ? { user_message_uuid: pendingInputUuid } : {}),
   ...((!replayReceipts || scenario === "background-bash-overlap") && detail.finalBackgroundAnswer ? {
@@ -374,8 +385,18 @@ for await (const line of createInterface({ input: process.stdin })) {
     } else if (id === "late-approval") {
       lateDecision = response;
       if (turn === 2) result({ lateDecision });
+    } else if (id === "compact-context") {
+      compactContext = response.hookSpecificOutput?.additionalContext;
+      result();
     } else if (id === "prompt-" + turn) {
       privateContext = response.hookSpecificOutput?.additionalContext;
+      if (scenario === "workspace-context") {
+        if (turn === 2) {
+          request("compact-context", { subtype: "hook_callback", callback_id: hooks.SessionStart[0].hookCallbackIds[0],
+            input: { hook_event_name: "SessionStart", source: "compact" } });
+        } else { result(); }
+        continue;
+      }
       request("pre-" + turn, { subtype: "hook_callback",
         callback_id: hooks.PreToolUse[0].hookCallbackIds[0], tool_use_id: "tool-" + turn,
         input: { cwd: process.cwd(), hook_event_name: "PreToolUse", tool_name: nativeToolName,

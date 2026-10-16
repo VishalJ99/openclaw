@@ -22,7 +22,7 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildAnthropicCliBackend } from "./cli-backend.js";
 import type { ClaudeCliSecretInput } from "./cli-process.js";
-import { CLAUDE_PROTOCOL_FIXTURE, resultDetail } from "./cli-runtime.test-support.js";
+import { CLAUDE_PROTOCOL_FIXTURE, collect, resultDetail } from "./cli-runtime.test-support.js";
 import { executeClaudeCli } from "./cli.runtime.js";
 
 const roots: string[] = [];
@@ -120,14 +120,6 @@ function createLiveSession(cleanup?: () => Promise<void>): CliBackendLiveSession
       }
     },
   };
-}
-
-async function collect(context: CliBackendExecuteContext) {
-  const records: Record<string, unknown>[] = [];
-  for await (const record of executeClaudeCli(context)) {
-    records.push(record);
-  }
-  return records;
 }
 
 async function fixtureReadyBeforeSettlement(
@@ -656,6 +648,7 @@ describe("Claude native stdio boundary", () => {
       const context = await createContext(scenario, {
         liveSession: createLiveSession(),
         promptContext: { prependContext: "current private context" },
+        workspaceContext: async () => "SAVED_WORKSPACE",
         registerMessageInjection: (value) => {
           injection = value;
         },
@@ -689,7 +682,7 @@ describe("Claude native stdio boundary", () => {
       if (notificationReplay) {
         expect(detail.finalBackgroundAnswer).toBe(true);
       }
-      expect(detail.privateContext).toBe("current private context");
+      expect(detail.privateContext).toBe("SAVED_WORKSPACE\n\ncurrent private context");
       expect(detail.injectedContext).toEqual({});
       expect(detail.injectedRerunContext).toEqual(
         scenario.startsWith("steer-hook-") ? {} : undefined,

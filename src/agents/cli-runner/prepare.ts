@@ -69,11 +69,13 @@ import {
   buildBootstrapTruncationReportMeta,
 } from "../bootstrap-budget.js";
 import {
+  resolveWorkspaceContextRefresh,
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
 import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import { isPrimaryBootstrapRun, resolveWorkspaceBootstrapRouting } from "../bootstrap-routing.js";
+import { prepareBootstrapSnapshot } from "../bootstrap-snapshot.js";
 import {
   CLI_AUTH_EPOCH_VERSION,
   resolveCliAuthBindingFingerprint,
@@ -106,6 +108,10 @@ import { recordModelFallbackStop } from "../model-fallback-stop.js";
 import { recordAdmittedModelRoutingDecision } from "../model-routing-decision.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
 import { resolveRuntimeChannelPromptContext } from "../runtime-capabilities.js";
+import {
+  buildProjectContextSection,
+  prepareContextFilesForPrompt,
+} from "../system-prompt-context-files.js";
 import { buildSystemPromptReport } from "../system-prompt-report.js";
 import { appendModelIdentitySystemPrompt, buildModelIdentityPromptLine } from "../system-prompt.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
@@ -668,24 +674,61 @@ async function prepareCliRunContextWithinReadFence(
     : undefined;
 
   const sessionLabel = params.sessionKey ?? params.sessionId;
-  const { bootstrapFiles, contextFiles: resolvedContextFiles } = skipsTurnPreparation
-    ? { bootstrapFiles: [], contextFiles: [] }
-    : await resolveBootstrapContextForRunImpl({
-        workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
-        config: params.config,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        bootstrapUserProfileId: params.bootstrapUserProfileId,
-        chatType: runtimeChatType,
-        agentId: sessionAgentId,
-        contextMode: params.bootstrapContextMode,
-        runKind: params.bootstrapContextRunKind,
-        warn: makeBootstrapWarnImpl({
-          sessionLabel,
-          workspaceDir,
-          warn: (message) => cliBackendLog.warn(message),
-        }),
-      });
+  const lifecycleWorkspaceContext =
+    !isSideQuestion &&
+    resolveWorkspaceContextRefresh(params.config, sessionAgentId) === "compaction";
+  if (lifecycleWorkspaceContext && (!isClaudeCli || nodeClaudePlacement || isSideQuestion)) {
+    throw new Error(
+      "workspaceContextRefresh=compaction requires the managed local Claude CLI harness.",
+    );
+  }
+  const loadWorkspaceContext = () =>
+    resolveBootstrapContextForRunImpl({
+      lifecycleWorkspaceContext,
+      workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
+      config: params.config,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      bootstrapUserProfileId: params.bootstrapUserProfileId,
+      chatType: runtimeChatType,
+      agentId: sessionAgentId,
+      contextMode: params.bootstrapContextMode,
+      runKind: params.bootstrapContextRunKind,
+      warn: makeBootstrapWarnImpl({
+        sessionLabel,
+        workspaceDir,
+        warn: (message) => cliBackendLog.warn(message),
+      }),
+    });
+  let snapshotOwner: Awaited<ReturnType<typeof prepareBootstrapSnapshot>> | undefined;
+  let snapshotWriter: Awaited<ReturnType<typeof prepareCliHistoryBoundary>>;
+  if (lifecycleWorkspaceContext) {
+    const snapshotParams = await admitCliRunParams(params, workspaceResolution.agentId);
+    params = snapshotParams;
+    snapshotWriter = await prepareCliHistoryBoundary(snapshotParams, {
+      credential: authCredential,
+    });
+    if (!snapshotWriter) {
+      throw new Error("Durable workspace context requires an admitted transcript writer.");
+    }
+    snapshotOwner = await prepareBootstrapSnapshot({
+      writer: snapshotWriter,
+      workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
+      profileId: params.bootstrapUserProfileId,
+      audience: runtimeChatType,
+      contextMode: params.bootstrapContextMode,
+      assertCurrent: () => {
+        params.assertCurrent?.();
+        params.abortSignal?.throwIfAborted();
+      },
+      load: loadWorkspaceContext,
+    });
+  }
+  const { bootstrapFiles, contextFiles: resolvedContextFiles } = snapshotOwner
+    ? await snapshotOwner.load(false, { createIfMissing: !isControlOperation })
+    : skipsTurnPreparation
+      ? { bootstrapFiles: [], contextFiles: [] }
+      : await loadWorkspaceContext();
   // Mirror the embedded runner's bootstrap routing for backends that transport
   // OpenClaw's system prompt. Only a declared native-tool backend can complete
   // the file-based ritual; other backends receive limited guidance.
@@ -700,7 +743,8 @@ async function prepareCliRunContextWithinReadFence(
     selectedNativeToolsProvideFileAccess &&
     params.disableTools !== true;
   const bootstrapRouting =
-    skipsTurnPreparation || !canTransportSystemPrompt(backendResolved.config)
+    (skipsTurnPreparation && !lifecycleWorkspaceContext) ||
+    !canTransportSystemPrompt(backendResolved.config)
       ? undefined
       : await resolveWorkspaceBootstrapRouting({
           isWorkspaceBootstrapPending: isWorkspaceBootstrapPendingImpl,
@@ -717,15 +761,16 @@ async function prepareCliRunContextWithinReadFence(
         });
   const bootstrapMode = bootstrapRouting?.bootstrapMode ?? "none";
   const includeBootstrapInSystemContext = bootstrapRouting?.includeBootstrapInSystemContext ?? true;
-  const contextFiles = includeBootstrapInSystemContext
+  const workspaceContextFiles = includeBootstrapInSystemContext
     ? resolvedContextFiles
     : resolvedContextFiles.filter((file) => !/(^|[\\/])BOOTSTRAP\.md$/iu.test(file.path.trim()));
+  const contextFiles = lifecycleWorkspaceContext ? [] : workspaceContextFiles;
   const bootstrapFilesForInjectionStats = includeBootstrapInSystemContext
     ? bootstrapFiles
     : bootstrapFiles.filter((file) => file.name !== DEFAULT_BOOTSTRAP_FILENAME);
   const bootstrapInjectionStats = buildBootstrapInjectionStats({
     bootstrapFiles: bootstrapFilesForInjectionStats,
-    injectedFiles: contextFiles,
+    injectedFiles: workspaceContextFiles,
   });
   const {
     bootstrapAnalysis,
@@ -740,7 +785,9 @@ async function prepareCliRunContextWithinReadFence(
     seenSignatures: params.bootstrapPromptWarningSignaturesSeen,
     previousSignature: params.bootstrapPromptWarningSignature,
   });
-  const bootstrapTruncationNotice = buildBootstrapPromptWarningNotice(bootstrapPromptWarning.lines);
+  const bootstrapTruncationNotice = lifecycleWorkspaceContext
+    ? undefined
+    : buildBootstrapPromptWarningNotice(bootstrapPromptWarning.lines);
   // Ring-zero OpenClaw runs replace the bundle MCP surface entirely: no
   // loopback server, no plugin/user servers. A selectable backend also removes
   // its native tools, leaving only this openclaw stdio server.
@@ -934,6 +981,9 @@ async function prepareCliRunContextWithinReadFence(
         ]),
       )
     : baseExtraSystemPromptHash;
+  const workspaceContextScopeHash = snapshotOwner
+    ? hashCliSessionText(snapshotOwner.scope)
+    : undefined;
   const extraSystemPromptHash = resolveCliBootstrapPromptHash({
     baseHash: toolBoundExtraSystemPromptHash,
     bootstrapMode,
@@ -1275,7 +1325,13 @@ async function prepareCliRunContextWithinReadFence(
       params,
       backendId: backendResolved.id,
       execute: preparedExecution?.execute,
+      lifecycleWorkspaceContext,
     });
+    if (lifecycleWorkspaceContext && executionTarget.kind !== "plugin") {
+      throw new Error(
+        "workspaceContextRefresh=compaction requires a managed Claude plugin transport.",
+      );
+    }
     const promptToolNamesHash = bundleMcpEnabled
       ? hashCliSessionText(JSON.stringify(promptTools.map((tool) => tool.name).toSorted()))
       : undefined;
@@ -1287,6 +1343,15 @@ async function prepareCliRunContextWithinReadFence(
     const controlOperationCliSessionId = isControlOperation
       ? params.cliSessionBinding?.sessionId?.trim() || params.cliSessionId?.trim()
       : undefined;
+    if (
+      controlOperationCliSessionId &&
+      (params.cliSessionBinding?.workspaceContextScopeHash ?? undefined) !==
+        workspaceContextScopeHash
+    ) {
+      throw new Error(
+        "Native compaction cannot cross workspace context scopes; run a regular turn first.",
+      );
+    }
     const reusableCliSessionCandidate: CliReusableSession = ignoreCliSessionCandidate
       ? { mode: "none" }
       : controlOperationCliSessionId
@@ -1297,6 +1362,7 @@ async function prepareCliRunContextWithinReadFence(
               authProfileId: effectiveAuthProfileId,
               authEpoch,
               authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+              workspaceContextScopeHash,
               extraSystemPromptHash,
               messageToolPolicyHash,
               promptToolNamesHash,
@@ -1305,7 +1371,9 @@ async function prepareCliRunContextWithinReadFence(
               mcpResumeHash: preparedBackendFinal.mcpResumeHash,
             })
           : params.cliSessionId
-            ? { mode: "reuse", sessionId: params.cliSessionId }
+            ? workspaceContextScopeHash
+              ? { mode: "invalidate", invalidatedReason: "workspace-context" }
+              : { mode: "reuse", sessionId: params.cliSessionId }
             : { mode: "none" };
     const backendReusableCliSession: CliReusableSession =
       reusableCliSessionCandidate.mode === "reuse-with-drift" &&
@@ -1462,7 +1530,8 @@ async function prepareCliRunContextWithinReadFence(
       backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
     const historyParams = (params = await admitCliRunParams(params, workspaceResolution.agentId));
     const cliHistoryWriter = !isSideQuestion
-      ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
+      ? (snapshotWriter ??
+        (await prepareCliHistoryBoundary(historyParams, { credential: authCredential })))
       : undefined;
     // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
     const historyAllowed = params.sessionManager !== undefined || cliHistoryWriter !== undefined;
@@ -1612,7 +1681,39 @@ async function prepareCliRunContextWithinReadFence(
           .join("\n\n").length,
       },
     });
+    const workspaceContext = snapshotOwner
+      ? async (source: "startup" | "resume" | "compact") => {
+          const loaded =
+            source === "compact"
+              ? await snapshotOwner.load(true)
+              : { bootstrapFiles, contextFiles: workspaceContextFiles };
+          const files = includeBootstrapInSystemContext
+            ? loaded.contextFiles
+            : loaded.contextFiles.filter(
+                (file) => !/(^|[\\/])BOOTSTRAP\.md$/iu.test(file.path.trim()),
+              );
+          const stats = buildBootstrapInjectionStats({
+            bootstrapFiles: includeBootstrapInSystemContext
+              ? loaded.bootstrapFiles
+              : loaded.bootstrapFiles.filter((file) => file.name !== DEFAULT_BOOTSTRAP_FILENAME),
+            injectedFiles: files,
+          });
+          const budget = buildBootstrapBudgetState({
+            config: params.config,
+            agentId: sessionAgentId,
+            files: stats,
+          });
+          const notice = buildBootstrapPromptWarningNotice(budget.bootstrapPromptWarning.lines);
+          return [
+            notice,
+            buildProjectContextSection(prepareContextFilesForPrompt(files)).join("\n"),
+          ]
+            .filter(Boolean)
+            .join("\n\n");
+        }
+      : undefined;
     const buildPreparedContext = (preparedParams: PreparedCliRunContext["params"]) => ({
+      ...(workspaceContext ? { workspaceContext } : {}),
       params: preparedParams,
       bindQuestionAnswerAuthority,
       sessionEventSourcePolicy,
@@ -1647,6 +1748,7 @@ async function prepareCliRunContextWithinReadFence(
       authBindingFingerprint,
       ...(skipLocalCredentialEpoch ? { authBindingSkipsLocalCredential: true as const } : {}),
       authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+      workspaceContextScopeHash,
       extraSystemPromptHash,
       messageToolPolicyHash,
       promptToolNamesHash,

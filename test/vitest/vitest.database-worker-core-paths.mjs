@@ -462,6 +462,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/stage-sandbox-media.scp.test.ts",
   "src/agents/workspace-alias-rebind.test.ts",
   "src/agents/bootstrap-files.test.ts",
+  "src/agents/bootstrap-snapshot.test.ts",
   "src/agents/workspace-attestation.worker.test.ts",
   "src/agents/workspace-bootstrap-publish.test.ts",
   "src/agents/workspace-sqlite-safety.test.ts",

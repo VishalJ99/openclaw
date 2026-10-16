@@ -639,6 +639,9 @@ export function buildCliRunResult(params: {
                   : {}),
                 ...(context.authEpoch ? { authEpoch: context.authEpoch } : {}),
                 authEpochVersion: context.authEpochVersion,
+                ...(context.workspaceContextScopeHash
+                  ? { workspaceContextScopeHash: context.workspaceContextScopeHash }
+                  : {}),
                 ...(context.extraSystemPromptHash
                   ? { extraSystemPromptHash: context.extraSystemPromptHash }
                   : {}),

@@ -291,3 +291,40 @@ Either way, it reports sizes and top contributors; it does **not** dump the full
     The full agent execution cycle from inbound message to final reply.
   </Card>
 </CardGroup>
+
+## Workspace Markdown refresh cadence
+
+Workspace Markdown is refreshed each turn by default. The managed local Claude CLI
+harness also supports an opt-in cadence:
+
+```json5
+{
+  agents: {
+    defaults: { workspaceContextRefresh: "compaction" },
+  },
+}
+```
+
+An agent entry can override `workspaceContextRefresh`. Use `"every-turn"` to keep
+the default behavior. Other harnesses reject `"compaction"` explicitly.
+
+In compaction mode, OpenClaw saves the effective workspace context in the existing
+SQLite transcript before dispatch. The snapshot includes personal context,
+bootstrap hook additions and normal audience filtering. Selected file contents
+are retained as snapshot metadata; the injected context still obeys file budgets. A process
+restart, cache eviction, model change, or native recovery reuses that saved
+content. A new OpenClaw session reads fresh content.
+
+The workspace block is delivered through private native lifecycle context instead
+of the stable system prompt. The first submitted input in a native process
+receives the saved snapshot. Native `SessionStart` with source `compact` awaits a
+fresh snapshot and its durable write before returning context to the continuation.
+Changing the personal profile, audience, or full/lightweight context mode starts a
+fresh native session and recovers eligible conversation history from OpenClaw.
+Native compaction cannot cross those scopes; run a regular turn first to activate
+the new scope. Ordinary turns do not reinject the workspace block. Snapshot records are storage
+metadata and do not become conversation messages or reseed text.
+
+External edits intentionally remain invisible until compaction or a new session.
+An agent's own edits remain visible through its existing tool history. Skills,
+tool permissions, and unrelated per-turn hooks keep their existing lifecycles.
