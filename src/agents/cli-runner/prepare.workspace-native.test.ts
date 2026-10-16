@@ -73,7 +73,9 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
   });
   const cleanups: Array<() => Promise<void> | void> = [];
   cleanup = async () => {
-    for (const fn of cleanups.toReversed()) await fn();
+    for (const fn of cleanups.toReversed()) {
+      await fn();
+    }
     await fixture.cleanup();
   };
   const { dir, sessionTarget: target } = fixture.session;
@@ -99,7 +101,7 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
     resolveRuntimeCliBackends: () => [backend],
   });
   let refreshEntered: (() => void) | undefined;
-  let refreshRelease: Promise<void> | undefined;
+  let refreshRelease = Promise.resolve();
   const loadBootstrap = resolveBootstrapContextForRun;
   setCliRunnerPrepareTestDeps({
     isWorkspaceBootstrapPending: async () => false,
@@ -211,7 +213,9 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
       (entry) => entry.type === "custom" && entry.customType === "openclaw:workspace-context:v1",
     );
   expect(saved?.type).toBe("custom");
-  if (!saved || saved.type !== "custom") throw new Error("Snapshot missing");
+  if (!saved || saved.type !== "custom") {
+    throw new Error("Snapshot missing");
+  }
   await first.run(() =>
     manager.appendCustomEntryAsync("openclaw:workspace-context:v1", {
       ...saved.data,
