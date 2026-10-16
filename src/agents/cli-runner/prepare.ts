@@ -90,6 +90,7 @@ import {
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { resolveContextTokensForModel } from "../context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
+import { buildBootstrapContextForFiles } from "../embedded-agent-helpers/bootstrap.js";
 import { waitForDeferredTurnMaintenanceForSession } from "../embedded-agent-runner/context-engine-maintenance.js";
 import {
   resolvePromptBuildHookResult,
@@ -722,6 +723,11 @@ async function prepareCliRunContextWithinReadFence(
         params.abortSignal?.throwIfAborted();
       },
       load: loadWorkspaceContext,
+      render: (files) =>
+        buildBootstrapContextForFiles(files, {
+          config: params.config,
+          agentId: sessionAgentId,
+        }),
     });
   }
   const { bootstrapFiles, contextFiles: resolvedContextFiles } = snapshotOwner

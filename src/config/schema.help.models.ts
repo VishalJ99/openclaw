@@ -150,7 +150,7 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   "agents.defaults.skipOptionalBootstrapFiles":
     "Optional bootstrap files that should not be created in agent workspaces. Valid values: SOUL.md, USER.md, IDENTITY.md (HEARTBEAT.md is accepted but a no-op).",
   "agents.defaults.workspaceContextRefresh":
-    "Workspace Markdown refresh cadence. every-turn (default) reads edits each turn. compaction snapshots effective context until a new session or native compaction; supported by the managed local Claude CLI harness only. External edits are intentionally delayed.",
+    "Workspace Markdown refresh cadence. every-turn (default) reads edits each turn. compaction snapshots effective context until a new session or successful compaction; supported by managed local Claude CLI and local embedded built-in compaction. External edits are intentionally delayed.",
   "agents.defaults.contextInjection":
     'Controls workspace bootstrap-file injection in the embedded runtime: "always" uses normal injection (default), "continuation-skip" skips eligible continuation turns after a recorded full-bootstrap turn, and "never" disables injection. Does not control CLI-backed prompt preparation.',
   "agents.defaults.bootstrapMaxChars":

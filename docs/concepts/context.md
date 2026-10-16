@@ -295,7 +295,7 @@ Either way, it reports sizes and top contributors; it does **not** dump the full
 ## Workspace Markdown refresh cadence
 
 Workspace Markdown is refreshed each turn by default. The managed local Claude CLI
-harness also supports an opt-in cadence:
+harness and the local embedded runtime with built-in compaction support an opt-in cadence:
 
 ```json5
 {
@@ -306,7 +306,9 @@ harness also supports an opt-in cadence:
 ```
 
 An agent entry can override `workspaceContextRefresh`. Use `"every-turn"` to keep
-the default behavior. Other harnesses reject `"compaction"` explicitly.
+the default behavior. Managed Codex, external CLI processes, remote Claude placement,
+and context engines that own compaction reject `"compaction"` explicitly; their
+first post-compaction continuation is not covered by this lifecycle contract.
 
 In compaction mode, OpenClaw saves the effective workspace context in the existing
 SQLite transcript before dispatch. The snapshot includes personal context,
@@ -315,7 +317,20 @@ are retained as snapshot metadata; the injected context still obeys file budgets
 restart, cache eviction, model change, or native recovery reuses that saved
 content. A new OpenClaw session reads fresh content.
 
-The workspace block is delivered through private native lifecycle context instead
+Snapshots retain file inputs, not whole prompts. Each harness applies its current
+budgets, routing, and rendering to the retained files. Tool permissions, skills,
+memory-provider guidance, and current job instructions keep their existing refresh
+rules. Detached preparation does not write snapshots.
+
+In the embedded runtime, successful local compaction or a provider checkpoint marks
+the retained files stale. The first foreground request after that boundary awaits
+fresh file loading and snapshot persistence, then uses the existing prompt-series
+owner to install the refreshed context. This also applies to automatic retries in
+the same turn. A restart recognizes the durable compaction/checkpoint before
+reusing a snapshot. Failed compaction retains the previous files; a failed refresh
+stops dispatch until it can be retried.
+
+In managed Claude, the workspace block is delivered through private native lifecycle context instead
 of the stable system prompt. The first submitted input in a native process
 receives the saved snapshot. Native `SessionStart` with source `compact` awaits a
 fresh snapshot and its durable write before returning context to the continuation.

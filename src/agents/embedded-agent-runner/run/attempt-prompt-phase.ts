@@ -424,6 +424,7 @@ export async function runEmbeddedAttemptPromptPhase(
     publishDispatchState(state);
 
     if (!state.skipPromptSubmission) {
+      let workspacePromptRefreshPending = false;
       await submitEmbeddedAttemptPrompt({
         ...(promptBuildAppendContext ? { appendContext: promptBuildAppendContext } : {}),
         attempt,
@@ -495,11 +496,8 @@ export async function runEmbeddedAttemptPromptPhase(
         assertHostActive: promptAssembly.assertHostActive,
         withTranscriptWrite,
         getUserTranscriptContexts: sessionRuntime.boundary.getUserTranscriptContexts,
-        preparePrimaryModelRequest: () =>
-          promptToolPolicy.prepareForDispatch(async () => {
-            promptAssembly.decisionPrefilter.restrictionApplied = false;
-            promptAssembly.decisionPrefilter.status = "retained";
-            promptAssembly.decisionPrefilter.reason = "selection-changed";
+        preparePrimaryModelRequest: () => {
+          const preparePrompt = async () => {
             const refresh = await prepared.systemPrompt.prepareToolPrompt?.(
               promptToolPolicy.current.effectiveTools,
             );
@@ -515,6 +513,7 @@ export async function runEmbeddedAttemptPromptPhase(
                 : undefined;
             if (refreshedPrompt !== undefined && !projection) {
               setActiveSessionSystemPrompt(refreshedPrompt);
+              workspacePromptRefreshPending = false;
             }
             return () => ({
               tools: activeSession.agent.state.tools.slice(),
@@ -526,12 +525,39 @@ export async function runEmbeddedAttemptPromptPhase(
                       commit: () => {
                         projection.commit();
                         setActiveSessionSystemPrompt(projection.systemPrompt);
+                        workspacePromptRefreshPending = false;
                       },
                     },
                   }
                 : {}),
             });
-          }),
+          };
+          const prepareSelection = () =>
+            promptToolPolicy.prepareForDispatch(async () => {
+              promptAssembly.decisionPrefilter.restrictionApplied = false;
+              promptAssembly.decisionPrefilter.status = "retained";
+              promptAssembly.decisionPrefilter.reason = "selection-changed";
+              return preparePrompt();
+            });
+          const refreshWorkspace = prepared.bootstrap.refreshWorkspaceContext;
+          if (!refreshWorkspace) {
+            return prepareSelection();
+          }
+          return (async () => {
+            workspacePromptRefreshPending ||= await refreshWorkspace();
+            const selection = prepareSelection();
+            if (selection) {
+              return selection;
+            }
+            if (workspacePromptRefreshPending) {
+              return preparePrompt();
+            }
+            return () => ({
+              tools: activeSession.agent.state.tools.slice(),
+              systemPrompt: activeSession.agent.state.systemPrompt,
+            });
+          })();
+        },
         onSteeringAcknowledged: () => {
           leasedSteering = undefined;
         },

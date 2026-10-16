@@ -322,7 +322,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "agents.entries.*.subagents.delegationMode":
     'Per-agent override for sub-agent delegation strength. Omit to use "prefer" in this agent\'s main session and "suggest" elsewhere; explicit "prefer" or "suggest" always wins.',
   "agents.entries.*.workspaceContextRefresh":
-    "Per-agent workspace Markdown refresh cadence; inherits agents.defaults.workspaceContextRefresh. compaction requires the managed local Claude CLI harness.",
+    "Per-agent workspace Markdown refresh cadence; inherits agents.defaults.workspaceContextRefresh. compaction requires managed local Claude CLI or local embedded built-in compaction.",
   "agents.entries.*.contextInjection":
     "Per-agent override for workspace bootstrap-file injection in the embedded runtime. Omit to inherit agents.defaults.contextInjection. Does not control CLI-backed prompt preparation.",
   "agents.entries.*.cwd":

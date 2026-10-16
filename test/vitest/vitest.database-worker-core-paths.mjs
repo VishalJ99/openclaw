@@ -463,6 +463,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/workspace-alias-rebind.test.ts",
   "src/agents/bootstrap-files.test.ts",
   "src/agents/bootstrap-snapshot.test.ts",
+  "src/agents/embedded-agent-runner/run/attempt-workspace-snapshot.test.ts",
   "src/agents/workspace-attestation.worker.test.ts",
   "src/agents/workspace-bootstrap-publish.test.ts",
   "src/agents/workspace-sqlite-safety.test.ts",

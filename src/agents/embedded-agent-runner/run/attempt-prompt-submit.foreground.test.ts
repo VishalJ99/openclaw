@@ -6,6 +6,7 @@ import {
   prepareSystemAgentRunAdmission,
   resolveAdmittedRunActiveAssertion,
 } from "../../admitted-run-context.js";
+import { agentSessionSetContextReplacementHook } from "../../sessions/agent-session-compaction.js";
 import {
   createAssistant,
   createAssistantResultStream,
@@ -14,6 +15,7 @@ import {
   streamMocks,
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { agentSessionRunProviderCompaction } from "../../sessions/agent-session-types.js";
 import {
   clearEmbeddedSessionPromptStates,
   beginSessionSystemPrompt,
@@ -24,7 +26,10 @@ import { normalizeMessagesForLlmBoundary } from "./attempt-llm-boundary.js";
 import { installAttemptPermissionPrompt } from "./attempt-permission-prompt.js";
 import { submitEmbeddedAttemptPrompt } from "./attempt-prompt-submit.js";
 import { createBaseInput, createSession, sessionId } from "./attempt-prompt-submit.test-support.js";
-import { buildRuntimeContextCustomMessage } from "./runtime-context-prompt.js";
+import {
+  buildRuntimeContextCustomMessage,
+  buildSystemUpdateMessage,
+} from "./runtime-context-prompt.js";
 
 registerAgentSessionLoopTestLifecycle();
 
@@ -33,6 +38,56 @@ afterEach(() => {
 });
 
 describe("submitEmbeddedAttemptPrompt foreground dispatch", () => {
+  it("awaits preparation again after a provider checkpoint and preserves its current request tail", async () => {
+    const { session, sessionManager } = await createTestSession();
+    let compacted = false;
+    session[agentSessionSetContextReplacementHook](() => {
+      compacted = true;
+    });
+    const requests: Context[] = [];
+    streamMocks.streamSimple.mockImplementation((model, context) => {
+      requests.push(structuredClone(context));
+      return createAssistantResultStream(createAssistant(model, [{ type: "text", text: "Done" }]));
+    });
+    const checkpoint = createAssistant(testModel, []);
+    checkpoint.providerReplay = {
+      type: "openai-responses-retained-compaction",
+      data: "fixture-checkpoint",
+    };
+    await submitEmbeddedAttemptPrompt({
+      ...createBaseInput(),
+      activeSession: session,
+      appendContext: undefined,
+      prependContext: undefined,
+      compactBeforeRequest: async () =>
+        session[agentSessionRunProviderCompaction](async (_signal, committed) => {
+          await sessionManager.appendMessageAsync(checkpoint);
+          committed(100, 20);
+          return checkpoint;
+        }),
+      preparePrimaryModelRequest: async () => {
+        const update = buildSystemUpdateMessage(
+          compacted ? "AFTER_CHECKPOINT_UPDATE" : "BEFORE_CHECKPOINT_UPDATE",
+          "prompt-update",
+          false,
+        );
+        return () => ({
+          tools: session.agent.state.tools,
+          systemPrompt: compacted ? "FRESH_WORKSPACE_PREFIX" : "SAVED_WORKSPACE_PREFIX",
+          promptUpdate: { update, commit: () => {} },
+        });
+      },
+      promptActiveSession: (prompt, options) => session.prompt(prompt, options),
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.systemPrompt).toBe("FRESH_WORKSPACE_PREFIX");
+    expect(requests[0]?.messages).toContainEqual(
+      expect.objectContaining({ providerReplay: checkpoint.providerReplay }),
+    );
+    expect(JSON.stringify(requests[0]?.messages)).toContain("BEFORE_CHECKPOINT_UPDATE");
+    expect(JSON.stringify(requests[0]?.messages)).toContain("AFTER_CHECKPOINT_UPDATE");
+  });
+
   it("retires a late update canceled after durable append and before its checkpoint", async () => {
     const model = {
       ...testModel,

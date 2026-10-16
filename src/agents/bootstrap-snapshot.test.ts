@@ -15,6 +15,7 @@ import { clearInternalHooks, registerInternalHook } from "../hooks/internal-hook
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { resolveBootstrapContextForRun } from "./bootstrap-files.js";
 import { prepareBootstrapSnapshot } from "./bootstrap-snapshot.js";
+import { buildBootstrapContextForFiles } from "./embedded-agent-helpers/bootstrap.js";
 
 const dirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
@@ -71,7 +72,14 @@ it("recovers saved bytes beyond the recent-event window and refreshes only at a 
   const load = vi.fn(() =>
     resolveBootstrapContextForRun({ workspaceDir, sessionKey: target.sessionKey }),
   );
-  const owner = () => prepareBootstrapSnapshot({ writer, workspaceDir, load, assertCurrent });
+  const owner = () =>
+    prepareBootstrapSnapshot({
+      writer,
+      workspaceDir,
+      load,
+      assertCurrent,
+      render: (files) => buildBootstrapContextForFiles(files, {}),
+    });
   expect((await (await owner()).load(false)).contextFiles[0]?.content).toBe("FIRST");
   // No model messages: storage-only notes may grow beyond continuation marker bounds.
   for (let index = 0; index < 501; index++) {

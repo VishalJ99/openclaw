@@ -320,7 +320,9 @@ export async function resolveBootstrapFilesForRun(
     resolveWorkspaceContextRefresh(params.config, params.agentId) === "compaction" &&
     !params.lifecycleWorkspaceContext
   ) {
-    throw new Error("workspaceContextRefresh=compaction requires the managed Claude CLI harness.");
+    throw new Error(
+      "workspaceContextRefresh=compaction requires a supported lifecycle harness (managed local Claude CLI or built-in local embedded compaction).",
+    );
   }
   return resolveBootstrapFiles(params, "registered");
 }
