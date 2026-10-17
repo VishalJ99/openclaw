@@ -67,6 +67,32 @@ afterEach(async () => {
   clearRuntimeConfigSnapshot();
 });
 
+it("rejects workspace snapshots at unsupported CLI admission", async () => {
+  const fixture = createCliRunnerPrepareFixture((params) => {
+    setRuntimeConfigSnapshot(params.config ?? {});
+    return prepareCliRunContext(params);
+  });
+  cleanup = () => fixture.cleanup();
+  setCliRunnerPrepareTestDeps({
+    isWorkspaceBootstrapPending: async () => false,
+    resolveBootstrapContextForRun: async () => ({ bootstrapFiles: [], contextFiles: [] }),
+    resolveOpenClawReferencePaths: async () => ({ docsPath: null, sourcePath: null }),
+    prepareClaudeCliSkillsPlugin: async () => ({ args: [], cleanup: async () => {} }),
+    loadManifestModelCatalog: () => [],
+  });
+  cliBackendsTesting.setDepsForTest({
+    resolvePluginSetupCliBackend: () => undefined,
+    resolveRuntimeCliBackends: () => [buildDefaultTestCliBackend()],
+  });
+  await expect(
+    fixture.prepare({
+      config: { agents: { defaults: { workspaceContextRefresh: "compaction" } } },
+    }),
+  ).rejects.toThrow(
+    "workspaceContextRefresh=compaction requires the managed local Claude CLI harness",
+  );
+});
+
 it("bounds legacy raw snapshots at restarted native output, isolates reassignment, and rejects revoked refresh", async () => {
   const fixture = createCliRunnerPrepareFixture((params) => {
     setRuntimeConfigSnapshot(params.config ?? {});
