@@ -13,14 +13,14 @@ const DELIVERY_FORMAT_LEAD: Record<DeliveryFormatVia, string> = {
 };
 
 /** Renders the delivering channel's formatting contract; only delivered runs bootstrap. */
-export function buildDeliveryFormatPrompt(params: {
+export function buildDeliveryFormatPromptContext(params: {
   cfg: OpenClawConfig;
   channel?: string | null;
   accountId?: string | null;
   via?: DeliveryFormatVia;
   agentId?: string;
   allowBootstrap?: boolean;
-}): string | undefined {
+}) {
   if (!params.channel) {
     return undefined;
   }
@@ -46,15 +46,24 @@ export function buildDeliveryFormatPrompt(params: {
     channel: plugin.id,
     response_format: responseFormat,
   };
-  return [
-    "### Delivery Format",
-    DELIVERY_FORMAT_LEAD[params.via ?? "reply"],
-    "",
-    "```json",
-    JSON.stringify(payload, null, 2),
-    "```",
-    "",
-  ].join("\n");
+  return {
+    context: JSON.stringify(payload, null, 2),
+    systemPrompt: [
+      "### Delivery Format",
+      DELIVERY_FORMAT_LEAD[params.via ?? "reply"],
+      "",
+      "```json",
+      JSON.stringify(payload, null, 2),
+      "```",
+      "",
+    ].join("\n"),
+  };
+}
+
+export function buildDeliveryFormatPrompt(
+  params: Parameters<typeof buildDeliveryFormatPromptContext>[0],
+): string | undefined {
+  return buildDeliveryFormatPromptContext(params)?.systemPrompt;
 }
 
 /**

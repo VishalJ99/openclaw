@@ -56,7 +56,7 @@ import {
 import { buildGroupIntro, buildSourceConversationContext } from "./groups.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import {
-  buildInboundMetaSystemPrompt,
+  buildInboundMetaPromptContext,
   buildInboundUserContextPrefix,
   resolveInboundUserContextPromptJoiner,
 } from "./inbound-meta.js";
@@ -334,7 +334,9 @@ vi.mock("./groups.js", async (importOriginal) => ({
 }));
 
 vi.mock("./inbound-meta.js", () => ({
-  buildInboundMetaSystemPrompt: vi.fn().mockReturnValue(""),
+  buildInboundMetaPromptContext: vi
+    .fn()
+    .mockReturnValue({ systemPrompt: "", metadataContext: "", context: "" }),
   buildInboundUserContextPrefix: vi.fn().mockReturnValue(""),
   formatActiveGoalContext: vi.fn().mockReturnValue(undefined),
   resolveInboundUserContextPromptJoiner: vi.fn().mockReturnValue(undefined),
@@ -2088,7 +2090,7 @@ describe("runPreparedReply media-only handling", () => {
         activation: usesBaseSession ? "always" : undefined,
         defaultActivation: "mention",
       });
-      expect(vi.mocked(buildInboundMetaSystemPrompt).mock.calls[0]?.[0]).toMatchObject({
+      expect(vi.mocked(buildInboundMetaPromptContext).mock.calls[0]?.[0]).toMatchObject({
         Provider: liveChannel,
         Surface: liveChannel,
         ChatType: "channel",

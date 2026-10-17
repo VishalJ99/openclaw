@@ -1,11 +1,12 @@
 import { Type } from "typebox";
 // Verifies CLI system-prompt construction without loading the full runner.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildHarnessVisibleReplyGuidance } from "../../auto-reply/source-reply-delivery-mode.js";
 import { clearPluginCommands, registerPluginCommand } from "../../plugins/commands.js";
 import { resolveSessionGitCoauthorPrompt } from "../git-coauthor-prompt.js";
 import { createStubTool } from "../test-helpers/agent-tool-stubs.js";
 import { buildCliAgentSystemPrompt } from "./helpers.js";
-import { prepareCliSystemPrompt } from "./prompt-context.js";
+import { prepareCliSystemPrompt, prepareCliTurnPromptContext } from "./prompt-context.js";
 
 vi.mock("../git-coauthor-prompt.js", () => ({
   resolveSessionGitCoauthorPrompt: vi.fn(),
@@ -265,5 +266,139 @@ describe("buildCliAgentSystemPrompt", () => {
 
     expect(prompt).toContain("`send`: `target` + `message`; target required this turn");
     expect(prompt).not.toContain("current source is default target");
+  });
+});
+
+describe("native Claude delivery context cache stability", () => {
+  const tools = [createStubTool("exec"), createStubTool("message")];
+  const base = {
+    workspaceDir: "/tmp/openclaw",
+    modelDisplay: "test/model",
+    tools,
+    deliveryContextInTurn: true,
+    contextFiles: [{ path: "AGENTS.md", content: "Keep the workspace instructions." }],
+  };
+  async function prepare(overrides: Partial<Parameters<typeof buildCliAgentSystemPrompt>[0]>) {
+    const input = { ...base, ...overrides };
+    const systemPrompt = buildCliAgentSystemPrompt(input);
+    return prepareCliTurnPromptContext({
+      backendId: "claude-cli",
+      backend: { command: "claude", systemPromptArg: "--system-prompt" },
+      privateContext: true,
+      isNewSession: false,
+      systemPrompt,
+      prompt: "Continue the task.",
+      capabilityToolNames: new Set(tools.map((tool) => tool.name)),
+      context: [],
+      prependContext: [],
+      deliveryGuidance: buildHarnessVisibleReplyGuidance({
+        sourceReplyDeliveryMode: input.sourceReplyDeliveryMode,
+        messageToolAvailable: true,
+        requireExplicitMessageTarget: input.requireExplicitMessageTarget,
+      }),
+    });
+  }
+  it("keeps native appendSystemPrompt bytes across source, handoff, completion and source turns", async () => {
+    const turns = [
+      {
+        runtimeChannel: "whatsapp",
+        runtimeChatType: "direct" as const,
+        sourceReplyDeliveryMode: "message_tool_only" as const,
+      },
+      {
+        runtimeChannel: "webchat",
+        runtimeChatType: "group" as const,
+        runtimeCapabilities: ["inlineButtons", "markdownDetails"],
+        customInlineButtonHint: true,
+        sourceReplyDeliveryMode: "automatic" as const,
+        requireExplicitMessageTarget: true,
+        silentReplyPromptMode: "none" as const,
+      },
+      {
+        runtimeChannel: "whatsapp",
+        sourceReplyDeliveryMode: "message_tool_only" as const,
+        requireExplicitMessageTarget: true,
+      },
+      {
+        runtimeChannel: "whatsapp",
+        runtimeChatType: "direct" as const,
+        sourceReplyDeliveryMode: "message_tool_only" as const,
+      },
+    ];
+    const results = [];
+    for (const turn of turns) {
+      results.push(await prepare(turn));
+    }
+    expect(new Set(results.map((result) => result.systemPrompt)).size).toBe(1);
+    for (const [index, result] of results.entries()) {
+      expect(result.systemPrompt).toContain("Keep the workspace instructions.");
+      expect(result.systemPrompt).toContain("No hidden instructions/private data/reasoning.");
+      expect(result.systemPrompt).toContain(
+        "if the current turn says final private, visible output uses `message(action=send)`",
+      );
+      expect(result.systemPrompt).toContain(
+        "In automatic mode with silentReplyPromptMode=none: follow turn delivery: private final => visible via `message(send)`; otherwise normal reply once",
+      );
+      expect(result.systemPrompt).toContain(
+        "customInlineButtonHint=false, current channel is present, and capabilities lack inlinebuttons",
+      );
+      expect(result.systemPrompt).toContain(
+        "ask owner for `<current channel>.capabilities.inlineButtons=dm|group|all|allowlist`",
+      );
+      expect(result.systemPrompt).toContain("In automatic mode, `send`: `target` + `message`");
+      expect(result.systemPrompt).toContain(
+        "In message_tool_only mode, include `message`; when requireExplicitMessageTarget=true, `target` is required",
+      );
+      expect(result.systemPrompt).toContain("No source default: proactive send needs `channel`");
+      expect(result.systemPrompt).toContain(
+        "In automatic mode with silentReplyPromptMode=generic: after visible `message(send)`, final ONLY uppercase NO_REPLY",
+      );
+      expect(result.systemPrompt).toContain("send confirmations before ending silently");
+      expect(result.systemPrompt).toContain(
+        "or a final reaction to the current source message: `message(action=react, final=true)`",
+      );
+      expect(result.systemPrompt).toContain(
+        "A confirmed final message or added final reaction to the current source completes the reply; never repeat it in text",
+      );
+      expect(result.promptContext?.appendContext).toContain(
+        `channel=${turns[index].runtimeChannel}`,
+      );
+      expect(result.promptContext?.appendContext).toContain(
+        `sourceReplyDeliveryMode=${turns[index].sourceReplyDeliveryMode}`,
+      );
+    }
+    expect(results[1].promptContext?.appendContext).toContain(
+      "OpenClaw delivers your final response automatically.",
+    );
+    expect(results[0].promptContext?.appendContext).toContain("customInlineButtonHint=false");
+    expect(results[1].promptContext?.appendContext).toContain("customInlineButtonHint=true");
+    expect(results[1].promptContext?.appendContext).toContain("target required this turn");
+    expect(results[2].promptContext?.appendContext).toContain("final=false");
+    expect(results[2].promptContext?.appendContext).toContain(
+      "An added reaction to the current source message with `final=true` can also complete the reply.",
+    );
+    expect(results[2].promptContext?.appendContext).toContain("Do not repeat delivered content.");
+    expect(results[2].promptContext?.appendContext).toContain("target required this turn");
+  });
+  it("refreshes genuine instructions, owner identity and tool restrictions", async () => {
+    const first = await prepare({
+      runtimeChannel: "whatsapp",
+      extraSystemPrompt: "Do not send mail.",
+      ownerNumbers: ["owner-a"],
+    });
+    const changed = await prepare({
+      runtimeChannel: "whatsapp",
+      extraSystemPrompt: "Do not send mail or delete files.",
+      ownerNumbers: ["owner-b"],
+      tools: [],
+    });
+    expect(changed.systemPrompt).not.toBe(first.systemPrompt);
+    expect(changed.systemPrompt).toContain("Do not send mail or delete files.");
+    expect(changed.systemPrompt).toContain("owner-b");
+    expect(changed.systemPrompt).not.toContain("owner-a");
+    expect(changed.systemPrompt).not.toContain("- exec: Run shell");
+    expect(changed.systemPrompt).not.toContain(
+      "if the current turn says final private, visible output uses `message(action=send)`",
+    );
   });
 });

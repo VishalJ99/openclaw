@@ -33,6 +33,24 @@ import {
 } from "./tts-runtime.test-support.js";
 
 describe("TTS runtime native voice-note routing", () => {
+  it("keeps voice instructions stable when delivery facts travel with the turn", () => {
+    const config = createTtsConfig("openclaw-speech-conditional-tts-hint-test");
+    const automatic = buildTtsSystemPromptHint(config, undefined, {
+      deliveryContextInTurn: true,
+      messageToolOnly: false,
+    });
+    const messageOnly = buildTtsSystemPromptHint(config, undefined, {
+      deliveryContextInTurn: true,
+      messageToolOnly: true,
+    });
+    expect(messageOnly).toBe(automatic);
+    expect(messageOnly).toContain(
+      "In message_tool_only mode use message(action=send) with voiceText",
+    );
+    expect(messageOnly).toContain("In automatic mode use [[tts:");
+    expect(messageOnly).toContain("follow that workspace instruction instead");
+  });
+
   it("prefers the environment preference path over migrated machine state", () => {
     const previousEnvPath = process.env.OPENCLAW_TTS_PREFS;
     const envPath = prefsPathFor("env-override");

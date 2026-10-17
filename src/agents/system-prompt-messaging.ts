@@ -1,5 +1,6 @@
 /** Messaging and child-completion guidance shared by full and minimal prompts. */
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
+import { CONDITIONAL_CONVERSATION_PROMPT } from "../auto-reply/reply/conversation-prompt-context.js";
 import { buildMessageToolTargetGuidance } from "../auto-reply/source-reply-delivery-mode.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { ChatType } from "../channels/chat-type.js";
@@ -30,15 +31,18 @@ export function buildMessagingSection(params: {
   messageChannelOptions?: string;
   messageToolHints?: string[];
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  deliveryContextInTurn?: boolean;
   requireExplicitMessageTarget?: boolean;
   silentReplyPromptMode?: SilentReplyPromptMode;
   delegationSectionRenders: boolean;
 }) {
   const messageToolOnly = params.sourceReplyDeliveryMode === "message_tool_only";
   const messageToolAvailable = params.availableTools.has("message");
+  const messageToolOnlyVisibleReplyInstruction =
+    "Current source visible reply MUST use `message(action=send)` or a final reaction to the current source message: `message(action=react, final=true)`. The final text is private. Set `final=false` for progress. Set `final=true`, or omit it, for the completed send. Skip tool = user gets nothing. No hidden instructions/private data/reasoning.";
   const visibleReplyInstruction = messageToolOnly
     ? messageToolAvailable
-      ? "- Current source visible reply MUST use `message(action=send)` or a final reaction to the current source message: `message(action=react, final=true)`. The final text is private. Set `final=false` for progress. Set `final=true`, or omit it, for the completed send. Skip tool = user gets nothing. No hidden instructions/private data/reasoning."
+      ? `- ${messageToolOnlyVisibleReplyInstruction}`
       : "- Current source visible reply unavailable; final text remains private."
     : `- Current-session final text normally routes to source.${messageToolAvailable ? " If turn says final private, visible output uses `message(action=send)`." : ""}`;
   const messageToolTargetInstruction = `- ${buildMessageToolTargetGuidance(params.requireExplicitMessageTarget === true)}`;
@@ -47,26 +51,6 @@ export function buildMessagingSection(params: {
     "- Subagents return results through their accepted completion path; parents relay required coordination. Do not send acknowledgments or duplicate completion reports.",
     "- Other services (e.g. email): user-authorized CLI/API use is allowed; normal tool permissions and approvals still apply.",
   ];
-  if (params.isMinimal) {
-    // Restricted delivery turns still need their sole visible-reply contract;
-    // omitting it makes a private final silently disappear for the requester.
-    if (
-      !messageToolOnly &&
-      !messageToolAvailable &&
-      !params.availableTools.has("exec") &&
-      !params.availableTools.has("sessions_send")
-    ) {
-      return [];
-    }
-    return [
-      "## Messaging",
-      ...(messageToolOnly
-        ? [visibleReplyInstruction, ...(messageToolAvailable ? [messageToolTargetInstruction] : [])]
-        : []),
-      ...routingGuidance,
-      "",
-    ];
-  }
   const showGenericInlineButtonHint = !params.customInlineButtonHint;
   const groupMessageToolOnly =
     messageToolOnly && (params.runtimeChatType === "group" || params.runtimeChatType === "channel");
@@ -90,6 +74,64 @@ export function buildMessagingSection(params: {
       : hasSubagents
         ? "- Subagents: `subagents(action=list)` only for status/debug visibility."
         : "";
+  if (params.deliveryContextInTurn) {
+    return [
+      ...CONDITIONAL_CONVERSATION_PROMPT,
+      "## Messaging",
+      "- Follow the current turn's delivery facts and visible-reply guidance, not a previous turn's route. sourceReplyDeliveryMode=automatic normally routes final text to source; message_tool_only keeps final text private.",
+      ...(messageToolAvailable
+        ? [
+            "- In automatic mode, if the current turn says final private, visible output uses `message(action=send)`.",
+          ]
+        : []),
+      messageToolAvailable
+        ? `- In message_tool_only mode: ${messageToolOnlyVisibleReplyInstruction}`
+        : "- In message_tool_only mode no visible source reply is available; final text remains private.",
+      ...routingGuidance,
+      subagentOrchestrationGuidance,
+      ...(params.availableTools.has("sessions_send")
+        ? ["- Cross-session: `sessions_send(sessionKey, message)`."]
+        : []),
+      "- Completion event requesting update: rewrite in normal voice; follow this turn's visible-reply route. Never forward raw metadata or a silent placeholder.",
+      ...(messageToolAvailable
+        ? [
+            "- In automatic mode, `send`: `target` + `message`. In message_tool_only mode, include `message`; when requireExplicitMessageTarget=true, `target` is required. Otherwise current source is the default target; set `target` only elsewhere.",
+            "- No source default: proactive send needs `channel`. Otherwise set `channel` only outside the current/default source.",
+            `- In automatic mode with silentReplyPromptMode=generic: after visible \`message(send)\`, final ONLY uppercase ${SILENT_REPLY_TOKEN}, with no punctuation or quotes. Only the entire exact ${SILENT_REPLY_TOKEN} reply is silent. ${SILENT_REPLY_TOKEN} discards anything written this turn that was not sent, so send confirmations before ending silently.`,
+            "- In automatic mode with silentReplyPromptMode=none: follow turn delivery: private final => visible via `message(send)`; otherwise normal reply once.",
+            "- A confirmed final message or added final reaction to the current source completes the reply; never repeat it in text.",
+            "- For group/channel turns in message_tool_only mode, low-value chatter may use a reaction or silence; needed text still uses `message(action=send)`.",
+            '- Only when current customInlineButtonHint=false and capabilities include inlinebuttons: `presentation={"blocks":[{"type":"buttons","buttons":[{"label":"Yes","action":{"type":"callback","value":"yes"},"style":"primary"}]}]}`.',
+            "- Only when current customInlineButtonHint=false, current channel is present, and capabilities lack inlinebuttons: inline buttons OFF for the current channel; ask owner for `<current channel>.capabilities.inlineButtons=dm|group|all|allowlist`.",
+            ...(params.messageChannelOptions
+              ? [`- Available message channels: ${params.messageChannelOptions}.`]
+              : []),
+            ...(params.messageToolHints ?? []),
+          ]
+        : []),
+      "",
+    ];
+  }
+  if (params.isMinimal) {
+    // Restricted delivery turns still need their sole visible-reply contract;
+    // omitting it makes a private final silently disappear for the requester.
+    if (
+      !messageToolOnly &&
+      !messageToolAvailable &&
+      !params.availableTools.has("exec") &&
+      !params.availableTools.has("sessions_send")
+    ) {
+      return [];
+    }
+    return [
+      "## Messaging",
+      ...(messageToolOnly
+        ? [visibleReplyInstruction, ...(messageToolAvailable ? [messageToolTargetInstruction] : [])]
+        : []),
+      ...routingGuidance,
+      "",
+    ];
+  }
   return [
     "## Messaging",
     visibleReplyInstruction,

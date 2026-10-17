@@ -117,19 +117,30 @@ function cacheStablePromptPrefix(key: string, build: () => string): string {
   return value;
 }
 
-function buildExecApprovalPromptGuidance(params: {
+function resolveNativeApprovalPromptUi(params: {
   runtimeChannel?: string;
   inlineButtonsEnabled?: boolean;
   runtimeCapabilities?: readonly string[];
 }) {
-  const runtimeChannel = normalizeOptionalLowercaseString(params.runtimeChannel);
-  const usesNativeApprovalUi =
+  return (
     params.inlineButtonsEnabled ||
     hasNativeApprovalPromptRuntimeCapability(params.runtimeCapabilities) ||
-    isKnownNativeApprovalPromptChannel(runtimeChannel);
+    isKnownNativeApprovalPromptChannel(params.runtimeChannel)
+  );
+}
+
+function buildExecApprovalPromptGuidance(params: {
+  runtimeChannel?: string;
+  inlineButtonsEnabled?: boolean;
+  runtimeCapabilities?: readonly string[];
+  deliveryContextInTurn?: boolean;
+}) {
   const policyGuidance =
     "For task-authorized commands, make the execution request through the available tool and let its current policy decide whether approval is needed. Request exec approval only from an actual approval-pending result; never invent approval IDs or ask for a bare /approve.";
-  if (usesNativeApprovalUi) {
+  if (params.deliveryContextInTurn) {
+    return `${policyGuidance} exec approval-pending: when current nativeApprovalUi=true, use native card/buttons first. If nativeApprovalUi=false or the tool requires chat/manual approval, copy the exact /approve command from "Reply with:". Never ask for another code.`;
+  }
+  if (resolveNativeApprovalPromptUi(params)) {
     return `${policyGuidance} exec approval-pending: native card/buttons first. Plain /approve only when tool requires chat/manual approval; copy exact "Reply with:" command.`;
   }
   return `${policyGuidance} exec approval-pending: send exact /approve from "Reply with:"; never ask for another code.`;
@@ -196,6 +207,49 @@ function buildOwnerIdentityLine(
     return undefined;
   }
   return `${OWNER_PROMPT_PREFIX}${displayOwnerNumbers.join(", ")}${OWNER_PROMPT_SUFFIX}`;
+}
+
+function buildAssistantOutputDirectivesSection(params: {
+  isMinimal: boolean;
+  sourceMessageToolOnly: boolean;
+  messageToolAvailable: boolean;
+  deliveryContextInTurn?: boolean;
+}) {
+  if (params.deliveryContextInTurn && !params.isMinimal) {
+    return [
+      "## Assistant Output Directives",
+      params.messageToolAvailable
+        ? "- In message_tool_only mode, use `message(action=send)` for visible output; no legacy MEDIA directives. Media paths are attachments: `media`, or `attachments: [{media: ...}]`; speech uses `voiceText`, optional `voiceProvider`/`voiceId` and `asVoice`; explicit native reply uses `replyTo`."
+        : "- In message_tool_only mode, no visible source reply is available; final text remains private.",
+      "- In automatic mode, media attachments use an own-line `MEDIA:<path-or-url>` per item. Directives start a line outside fences/Markdown; never inline. Attached voice note: `[[audio_as_voice]]`. Native reply starts `[[reply_to_current]]` or `[[reply_to:<id>]]`; channel config controls delivery.",
+      "",
+    ];
+  }
+  if (params.isMinimal || (params.sourceMessageToolOnly && !params.messageToolAvailable)) {
+    return [];
+  }
+  if (params.sourceMessageToolOnly) {
+    return [
+      "## Assistant Output Directives",
+      "- Visible source output: `message(action=send)`.",
+      "- Media paths = attachments, not prose. One: `media`; many: `attachments: [{media: ...}]`.",
+      "- Synthesized speech: `voiceText`; optional `voiceProvider`, `voiceId`; voice note: `asVoice`.",
+      "- No legacy `MEDIA:` here. Explicit native reply: `replyTo`.",
+      "",
+    ];
+  }
+  // TRANSITIONAL(marker-retirement): bracket-directive teaching survives only for
+  // automatic-mode replies. Delete this branch (leaving the message-tool variant
+  // above) when the visibleReplies default flips to "message_tool".
+  return [
+    "## Assistant Output Directives",
+    "- Media attachment: own line `MEDIA:<path-or-url>` per item; path is not prose.",
+    "- Directive starts line, plain text, outside fences/Markdown; never inline or wrapped.",
+    "- Attached voice note: `[[audio_as_voice]]`.",
+    "- Native reply starts with `[[reply_to_current]]`; explicit id only: `[[reply_to:<id>]]`.",
+    "- Directives stripped before render; channel config controls delivery.",
+    "",
+  ];
 }
 
 function normalizeProviderPromptBlock(value: unknown): string | undefined {
@@ -312,6 +366,8 @@ export function buildAgentSystemPrompt(params: {
   /** Controls generic silent-reply guidance for external message channels. */
   silentReplyPromptMode?: SilentReplyPromptMode;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  /** Render conditional delivery policy when current facts travel in the turn context. */
+  deliveryContextInTurn?: boolean;
   requireExplicitMessageTarget?: boolean;
   /** Prompt-only strength for delegating non-trivial work through sub-agents. */
   subagentDelegationMode?: SubagentDelegationMode;
@@ -463,9 +519,10 @@ export function buildAgentSystemPrompt(params: {
       ? resolveToolName("suggest_task")
       : undefined,
   });
+  const deliveryContextInTurn = params.deliveryContextInTurn === true;
   const sourceMessageToolOnly = params.sourceReplyDeliveryMode === "message_tool_only";
   const messageChannelOptions = availableTools.has("message")
-    ? buildMessageChannelOptions(runtimeChannel)
+    ? buildMessageChannelOptions(deliveryContextInTurn ? undefined : runtimeChannel)
     : undefined;
   const silentReplyPromptMode = resolveSilentReplyPromptMode(params);
   const sandboxContainerWorkspace = params.sandboxInfo?.containerWorkspaceDir?.trim();
@@ -801,12 +858,20 @@ export function buildAgentSystemPrompt(params: {
         : "",
     ],
     ...normalizeStringEntries(params.projectMemoryBootstrap),
-    acpHarnessSpawnAllowed &&
-      threadBoundAcpSpawnEnabled && [
-        runtimeChannel === "discord" &&
-          'Discord ACP default: persistent thread (`thread:true`, `mode:"session"`) unless user says otherwise.',
-        'ACP thread: only `sessions_spawn(runtime:"acp", thread:true)`; never create a messaging thread for it.',
-      ],
+    ...(acpHarnessSpawnAllowed && (threadBoundAcpSpawnEnabled || deliveryContextInTurn)
+      ? [
+          ...(deliveryContextInTurn
+            ? [
+                'Only when the current channel supports threadbound-acp-spawn; Discord ACP default is persistent thread (`thread:true`, `mode:"session"`) unless the user says otherwise.',
+              ]
+            : runtimeChannel === "discord"
+              ? [
+                  'Discord ACP default: persistent thread (`thread:true`, `mode:"session"`) unless user says otherwise.',
+                ]
+              : []),
+          'ACP thread: only `sessions_spawn(runtime:"acp", thread:true)`; never create a messaging thread for it.',
+        ]
+      : []),
     ...buildProactiveSubagentOrchestrationSection({
       enabled: proactiveSubagentOrchestration,
       hasSessionsSpawn,
@@ -819,78 +884,84 @@ export function buildAgentSystemPrompt(params: {
           ? `Current elevated level: ${elevated.defaultLevel} (full auto-approval unavailable here; use ask/on instead).`
           : "Current elevated level: off (elevated exec unavailable)."
       : "",
-    // TRANSITIONAL(marker-retirement): bracket directives remain for automatic replies.
-    !isMinimal &&
-      (!sourceMessageToolOnly || messageToolAvailable) && [
-        "## Assistant Output Directives",
-        ...(sourceMessageToolOnly
-          ? [
-              "- Visible source output: `message(action=send)`.",
-              "- Media paths = attachments, not prose. One: `media`; many: `attachments: [{media: ...}]`.",
-              "- Synthesized speech: `voiceText`; optional `voiceProvider`, `voiceId`; voice note: `asVoice`.",
-              "- No legacy `MEDIA:` here. Explicit native reply: `replyTo`.",
-            ]
-          : [
-              "- Media attachment: own line `MEDIA:<path-or-url>` per item; path is not prose.",
-              "- Directive starts line, plain text, outside fences/Markdown; never inline or wrapped.",
-              "- Attached voice note: `[[audio_as_voice]]`.",
-              "- Native reply starts with `[[reply_to_current]]`; explicit id only: `[[reply_to:<id>]]`.",
-              "- Directives stripped before render; channel config controls delivery.",
-            ]),
-        "",
-      ],
-    !isMinimal &&
-      silentReplyPromptMode !== "none" && [
-        "## Silent Replies",
-        `Nothing to say: entire reply exactly uppercase ${SILENT_REPLY_TOKEN}, without Markdown, punctuation, quotes, or other text.`,
-        `Only that whole reply is silent. A literal leading ${SILENT_REPLY_TOKEN} followed by a newline removes just that line; all remaining text is visible. ${SILENT_REPLY_TOKEN} discards anything written this turn that was not sent, so send confirmations before ending silently.`,
-        "",
-      ],
+    ...buildAssistantOutputDirectivesSection({
+      isMinimal,
+      sourceMessageToolOnly,
+      messageToolAvailable,
+      deliveryContextInTurn,
+    }),
+    ...(!isMinimal && (deliveryContextInTurn || silentReplyPromptMode !== "none")
+      ? [
+          "## Silent Replies",
+          deliveryContextInTurn
+            ? `Only when silentReplyPromptMode=generic or conversationSilentReplyAllowed=true: nothing to say => entire reply exactly uppercase ${SILENT_REPLY_TOKEN}, without Markdown, punctuation, quotes, or other text. Never use it as a placeholder for a required reply.`
+            : `Nothing to say: entire reply exactly uppercase ${SILENT_REPLY_TOKEN}, without Markdown, punctuation, quotes, or other text.`,
+          `Only that whole reply is silent. A literal leading ${SILENT_REPLY_TOKEN} followed by a newline removes just that line; all remaining text is visible. ${SILENT_REPLY_TOKEN} discards anything written this turn that was not sent, so send confirmations before ending silently.`,
+          "",
+        ]
+      : []),
     // Approval UI and owner identity vary by turn, so keep both below the stable prefix.
     // A tool_call_style override owns the complete section and suppresses default guidance.
-    !providerSectionOverrides.tool_call_style &&
-      hasExec &&
-      buildExecApprovalPromptGuidance({
-        runtimeChannel: params.runtimeInfo?.channel,
-        inlineButtonsEnabled,
-        runtimeCapabilities,
-      }),
-    ownerLine && ["## Authorized Senders", ownerLine, ""],
-    !isMinimal &&
-      buildUiPresentationPrompt({
-        screenToolName: availableTools.has("screen") ? resolveToolName("screen") : undefined,
-        messageTool: messageToolAvailable ? params.messageTool : undefined,
-        showWidgetToolName: availableTools.has("show_widget")
-          ? resolveToolName("show_widget")
-          : undefined,
-        dashboardToolName: availableTools.has("dashboard")
-          ? resolveToolName("dashboard")
-          : undefined,
-        portalToolName: availableTools.has("portal") ? resolveToolName("portal") : undefined,
-      }),
-    !isMinimal &&
-      runtimeChannel === "webchat" &&
-      (!sourceMessageToolOnly || messageToolAvailable) && [
-        "## Control UI Embed",
-        "`[embed ...]`: Control UI/webchat only; inline rich bubble. Else use regular links.",
-        sourceMessageToolOnly
-          ? "- Files: message attachment fields. Web rich render: `[embed ...]`."
-          : "- Attachments: `MEDIA:`. Web rich render: `[embed ...]`.",
-        '- Hosted doc: `[embed ref="cv_123" title="Status" height="320" /]`; URL form: `[embed url="/__openclaw__/canvas/documents/cv_123/index.html" title="Status" height="320" /]`.',
-        '- YouTube: `[embed url="https://www.youtube.com/watch?v=VIDEO_ID" title="Video" /]`; no widget needed.',
-        "- Never local/file:// or arbitrary URL. Only hosted Canvas refs/URLs or YouTube video URLs.",
-        "- Quote attributes. Stage hosted docs in the profile-scoped root; prefer `ref` or use the full hosted URL.",
-        "",
-      ],
-    !isMinimal &&
-      runtimeChannel === "webchat" && [
-        "## Control UI Side Chat",
-        "- Operator has a read-only Side chat for this session's status and explanations.",
-        "- On request, do not spawn sub-agents or burn main-thread turns merely to summarize status or re-explain recent work.",
-        hasSessionsSpawn &&
-          "- Reserve `sessions_spawn` for delegated work with its own deliverable.",
-        "",
-      ],
+    ...(providerSectionOverrides.tool_call_style || !hasExec
+      ? []
+      : [
+          buildExecApprovalPromptGuidance({
+            runtimeChannel: params.runtimeInfo?.channel,
+            inlineButtonsEnabled,
+            runtimeCapabilities,
+            deliveryContextInTurn,
+          }),
+        ]),
+    ...(ownerLine ? ["## Authorized Senders", ownerLine, ""] : []),
+    ...(!isMinimal
+      ? [
+          buildUiPresentationPrompt({
+            screenToolName: availableTools.has("screen") ? resolveToolName("screen") : undefined,
+            messageTool: messageToolAvailable ? params.messageTool : undefined,
+            showWidgetToolName: availableTools.has("show_widget")
+              ? resolveToolName("show_widget")
+              : undefined,
+            dashboardToolName: availableTools.has("dashboard")
+              ? resolveToolName("dashboard")
+              : undefined,
+            portalToolName: availableTools.has("portal") ? resolveToolName("portal") : undefined,
+          }),
+        ]
+      : []),
+    ...(!isMinimal &&
+    (deliveryContextInTurn || runtimeChannel === "webchat") &&
+    (deliveryContextInTurn || !sourceMessageToolOnly || messageToolAvailable)
+      ? [
+          "## Control UI Embed",
+          "`[embed ...]`: Control UI/webchat only; inline rich bubble. Else use regular links.",
+          deliveryContextInTurn
+            ? messageToolAvailable
+              ? "- Only for current channel=webchat. In message_tool_only mode use message attachment fields; in automatic mode use MEDIA directives. Web rich render: `[embed ...]`."
+              : "- Only for current channel=webchat. In automatic mode use MEDIA directives. In message_tool_only mode no visible source attachments are available."
+            : sourceMessageToolOnly
+              ? "- Files: message attachment fields. Web rich render: `[embed ...]`."
+              : "- Attachments: `MEDIA:`. Web rich render: `[embed ...]`.",
+          '- Hosted doc: `[embed ref="cv_123" title="Status" height="320" /]`; URL form: `[embed url="/__openclaw__/canvas/documents/cv_123/index.html" title="Status" height="320" /]`.',
+          '- YouTube: `[embed url="https://www.youtube.com/watch?v=VIDEO_ID" title="Video" /]`; no widget needed.',
+          "- Never local/file:// or arbitrary URL. Only hosted Canvas refs/URLs or YouTube video URLs.",
+          "- Quote attributes. Stage hosted docs in the profile-scoped root; prefer `ref` or use the full hosted URL.",
+          "",
+        ]
+      : []),
+    ...(!isMinimal && (deliveryContextInTurn || runtimeChannel === "webchat")
+      ? [
+          "## Control UI Side Chat",
+          ...(deliveryContextInTurn
+            ? ["- This section applies only when current channel=webchat."]
+            : []),
+          "- Operator has a read-only Side chat for this session's status and explanations.",
+          "- On request, do not spawn sub-agents or burn main-thread turns merely to summarize status or re-explain recent work.",
+          ...(hasSessionsSpawn
+            ? ["- Reserve `sessions_spawn` for delegated work with its own deliverable."]
+            : []),
+          "",
+        ]
+      : []),
     ...buildMessagingSection({
       isMinimal,
       availableTools,
@@ -901,20 +972,25 @@ export function buildAgentSystemPrompt(params: {
       messageChannelOptions,
       messageToolHints: params.messageToolHints,
       sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+      deliveryContextInTurn,
       requireExplicitMessageTarget: params.requireExplicitMessageTarget,
       silentReplyPromptMode,
       delegationSectionRenders: subagentDelegationPreferenceSection.includes("## Delegation"),
     }),
     // Capability-gated reply guidance stays below the cache boundary so channel changes
     // cannot alter the byte-identical stable prefix shared across sessions.
-    !isMinimal &&
-      collapsibleDetailsSupported && [
-        "## Collapsible Details",
-        "This surface renders `<details>` disclosures. When a reply has optional depth — long derivations, logs, background, worked examples — you may place it inside `<details><summary>Label</summary>` … `</details>` written on their own lines.",
-        "Keep the primary answer, and anything the user must act on, outside the block. Never hide the actual answer behind a disclosure.",
-        "",
-      ],
-    !isMinimal && params.ttsHint?.trim() && ["## Voice (TTS)", params.ttsHint.trim(), ""],
+    ...(!isMinimal && (deliveryContextInTurn || collapsibleDetailsSupported)
+      ? [
+          "## Collapsible Details",
+          ...(deliveryContextInTurn
+            ? ["Only when current capabilities include markdowndetails:"]
+            : []),
+          "This surface renders `<details>` disclosures. When a reply has optional depth — long derivations, logs, background, worked examples — you may place it inside `<details><summary>Label</summary>` … `</details>` written on their own lines.",
+          "Keep the primary answer, and anything the user must act on, outside the block. Never hide the actual answer behind a disclosure.",
+          "",
+        ]
+      : []),
+    ...(!isMinimal && params.ttsHint?.trim() ? ["## Voice (TTS)", params.ttsHint.trim(), ""] : []),
   );
 
   if (extraSystemPrompt) {
@@ -953,7 +1029,14 @@ export function buildAgentSystemPrompt(params: {
     // Only Runtime facts may move behind tools. Close the region before callers
     // append hook instructions or permission notices that must retain their role.
     SYSTEM_PROMPT_RELOCATABLE_BOUNDARY,
-    `${buildRuntimeLine(runtimeInfo, runtimeChannel, runtimeCapabilities)}${SYSTEM_PROMPT_RELOCATABLE_BOUNDARY_END}`,
+    [
+      buildRuntimeLine(runtimeInfo, runtimeChannel, runtimeCapabilities),
+      ...(deliveryContextInTurn
+        ? [
+            `Current turn delivery: sourceReplyDeliveryMode=${params.sourceReplyDeliveryMode ?? "automatic"} | requireExplicitMessageTarget=${params.requireExplicitMessageTarget === true} | silentReplyPromptMode=${silentReplyPromptMode} | chatType=${runtimeChatType ?? "unknown"} | customInlineButtonHint=${params.runtimeInfo?.customInlineButtonHint === true} | nativeApprovalUi=${resolveNativeApprovalPromptUi({ runtimeChannel, inlineButtonsEnabled, runtimeCapabilities })}`,
+          ]
+        : []),
+    ].join("\n") + SYSTEM_PROMPT_RELOCATABLE_BOUNDARY_END,
   );
 
   return joinPromptLines(lines);

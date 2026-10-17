@@ -698,6 +698,195 @@ describe("prepareCliRunContext", () => {
     clearRuntimeConfigSnapshot();
   });
 
+  it("keeps actual native initialization stable across delivery routes through CLI preparation", async () => {
+    const { buildAnthropicCliBackend } = await import("../../../extensions/anthropic/api.js");
+    const { prepareCommandConversationContext } =
+      await import("../command/conversation-context.js");
+    const { normalizeSessionDeliveryState } =
+      await import("../../utils/delivery-context.shared.js");
+    const { createChannelTestPluginBase } = await import("../../test-utils/channel-plugins.js");
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "whatsapp",
+          source: "test",
+          plugin: {
+            ...createChannelTestPluginBase({ id: "whatsapp" }),
+            agentPrompt: {
+              inboundFormattingHints: ({ accountId }: { accountId?: string }) => ({
+                text_markup: accountId === "primary" ? "plain" : "markdown",
+                rules: [],
+              }),
+            },
+          },
+        },
+      ]),
+    );
+    const { dir } = fixture.session;
+    const child = path.join(dir, "delivery-protocol.mjs");
+    fs.writeFileSync(
+      child,
+      `
+      import { createInterface } from "node:readline";
+      const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+      let initialize;
+      let user;
+      for await (const line of createInterface({input: process.stdin})) {
+        const message = JSON.parse(line);
+        if (message.type === "control_request" && message.request.subtype === "initialize") {
+          initialize = message.request;
+          send({type:"control_response", response:{subtype:"success", request_id:message.request_id, response:{commands:[], models:[]}}});
+        } else if (message.type === "user") {
+          user = message.message.content;
+          send({type:"control_request", request_id:"context", request:{subtype:"hook_callback",callback_id:"UserPromptSubmit",input:{hook_event_name:"UserPromptSubmit",prompt:user}}});
+        } else if (message.type === "control_response" && message.response.request_id === "context") {
+          send({type:"result",subtype:"success",is_error:false,session_id:"a174e16f-b6e9-48da-ad5a-c437dfc2f9b4",result:JSON.stringify({pid:process.pid,initialize,user,privateContext:message.response.response.hookSpecificOutput?.additionalContext})});
+        }
+      }
+    `,
+    );
+    const config = createBundledMessageToolConfig();
+    const backend = buildAnthropicCliBackend();
+    setRawCliBackendForPrepareTest({
+      ...backend,
+      bundleMcp: true,
+      config: { ...backend.config, command: process.execPath, args: [child], resumeArgs: [child] },
+    });
+    const turns = [
+      { messageChannel: "whatsapp", sourceReplyDeliveryMode: "message_tool_only" as const },
+      {
+        messageChannel: "webchat",
+        sourceReplyDeliveryMode: "automatic" as const,
+        chatType: "direct" as const,
+        requireExplicitMessageTarget: true,
+      },
+      {
+        messageChannel: "whatsapp",
+        sourceReplyDeliveryMode: "message_tool_only" as const,
+        requireExplicitMessageTarget: true,
+      },
+      { messageChannel: "whatsapp", sourceReplyDeliveryMode: "message_tool_only" as const },
+      { messageChannel: "whatsapp", sourceReplyDeliveryMode: "message_tool_only" as const },
+    ];
+    const native: Array<{
+      pid: number;
+      initialize: { appendSystemPrompt: string; systemPromptSnapshot: boolean };
+      privateContext: string;
+      user: string;
+    }> = [];
+    const rendered: string[] = [];
+    for (const [index, turn] of turns.entries()) {
+      const accountId = index === 0 ? "primary" : "secondary";
+      const source = await prepareCommandConversationContext({
+        cfg: config,
+        opts: {
+          message: "latest ask",
+          deliver: index !== 1,
+          extraSystemPrompt: "### Message Context\nCaller policy: never send mail.",
+          inputProvenance: {
+            kind: "inter_session",
+            sourceTool: index === 2 ? "subagent_settle" : "sessions_send",
+          },
+          sourceReplyDeliveryMode: turn.sourceReplyDeliveryMode,
+        },
+        runContext: {
+          messageChannel: turn.messageChannel,
+          accountId,
+          currentChannelId: "synthetic-conversation",
+        },
+        sessionKey: "agent:main:main",
+        sessionAgentId: "main",
+        ...(index !== 1 && index !== 4
+          ? {
+              sessionEntry: {
+                sessionId: "session-test",
+                updatedAt: 0,
+                chatType: "direct" as const,
+                delivery: normalizeSessionDeliveryState({
+                  context: { channel: "whatsapp", to: "synthetic-conversation", accountId },
+                  origin: { provider: "whatsapp", surface: "whatsapp", chatType: "direct" },
+                }),
+              },
+            }
+          : {}),
+      });
+      if (index === 2) {
+        mockBuildMediaTaskRuntimeContext.mockRejectedValueOnce(
+          new Error("Optional media context unavailable."),
+        );
+      }
+      const context = await fixture.prepare({
+        ...source,
+        config,
+        cliSessionBindingFacts: {
+          sourceReplyDeliveryMode: "message_tool_only",
+          requireExplicitMessageTarget: false,
+        },
+        provider: "claude-cli",
+        runId: `native-delivery-${index}`,
+        sessionKey: "agent:main:main",
+        timeoutMs: 10_000,
+        ...turn,
+      });
+      rendered.push(context.systemPrompt);
+      expect(context.executionTarget.kind).toBe("plugin");
+      if (context.executionTarget.kind !== "plugin") {
+        throw new Error("Expected native plugin execution");
+      }
+      let stdout = "";
+      try {
+        await executePluginOwnedProcess({
+          context,
+          execute: context.executionTarget.execute,
+          executionCommand: process.execPath,
+          executionArgs: [child],
+          env: { PATH: process.env.PATH ?? "", HOME: dir, CLAUDE_CONFIG_DIR: dir },
+          prompt: context.params.prompt,
+          promptContext: context.promptContext,
+          sessionId: "a174e16f-b6e9-48da-ad5a-c437dfc2f9b4",
+          useResume: index > 0,
+          noOutputTimeoutMs: 5_000,
+          consumeStdout: (chunk) => {
+            stdout += chunk;
+          },
+        });
+        const result = stdout
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+          .findLast((record) => record.type === "result");
+        expect(result?.subtype).toBe("success");
+        native.push(JSON.parse(result.result));
+      } finally {
+        await context.preparedBackend.closeLiveSession?.("restart");
+        await context.preparedBackend.cleanup?.();
+      }
+    }
+    expect(new Set(native.map((turn) => turn.pid)).size).toBe(turns.length);
+    expect(new Set(rendered).size).toBe(1);
+    expect(rendered[0]).toContain("Caller policy: never send mail.");
+    expect(new Set(native.map((turn) => turn.initialize.appendSystemPrompt)).size).toBe(1);
+    for (const [index, turn] of native.entries()) {
+      expect(turn.initialize.systemPromptSnapshot).toBe(false);
+      expect(turn.privateContext).toContain(`channel=${turns[index].messageChannel}`);
+      expect(turn.privateContext).toContain(
+        `sourceReplyDeliveryMode=${turns[index].sourceReplyDeliveryMode}`,
+      );
+      expect(turn.user).toBe("latest ask");
+    }
+    expect(native[0].privateContext).toContain('\\"account_id\\": \\"primary\\"');
+    expect(native[0].privateContext).toContain('\\"text_markup\\": \\"plain\\"');
+    expect(native[1].privateContext).not.toContain("Current inbound metadata:");
+    expect(native[1].privateContext).not.toContain("primary");
+    expect(native[2].privateContext).toContain("secondary");
+    expect(native[2].privateContext).toContain("markdown");
+    expect(native[1].privateContext).toContain("target required this turn");
+    expect(native[2].privateContext).toContain("requireExplicitMessageTarget=true");
+    expect(native[3].privateContext).toContain("requireExplicitMessageTarget=false");
+    expect(native[4].privateContext).not.toContain("Current inbound metadata:");
+    expect(native[4].privateContext).toContain("markdown");
+  });
+
   it.each(["process", "plugin"] as const)(
     "carries silent heartbeat outcome in late %s user input without rebinding",
     async (targetKind) => {

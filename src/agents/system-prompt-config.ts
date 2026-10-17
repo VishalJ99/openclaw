@@ -62,6 +62,7 @@ export function buildConfiguredAgentSystemPrompt(params: ConfiguredAgentSystemPr
       ? buildTtsSystemPromptHint(config, agentId, {
           preparedTtsPreferences,
           messageToolOnly: renderParams.sourceReplyDeliveryMode === "message_tool_only",
+          ...(renderParams.deliveryContextInTurn ? { deliveryContextInTurn: true } : {}),
         })
       : undefined,
     modelAliasLines: includeFullSections ? buildModelAliasLines(preparedModelRuntime) : [],

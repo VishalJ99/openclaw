@@ -7,6 +7,7 @@ import type {
   TaskSuggestionDeliveryMode,
 } from "../../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import type { ConversationPromptContext } from "../../auto-reply/reply/conversation-prompt-context.js";
 import type { ChannelOutboundTargetMode } from "../../channels/plugins/types.public.js";
 import type { GatewayUiCommandTarget } from "../../gateway/ui-command-target.types.js";
 import type { ImageContent as LlmImageContent } from "../../llm/types.js";
@@ -155,6 +156,7 @@ export type AgentCommandOpts = {
   /** Startup awaits returned work; incidental synchronous return values are ignored. */
   onExecutionStarted?: () => unknown;
   extraSystemPrompt?: string;
+  conversationPromptContext?: ConversationPromptContext;
   /** Conversation preparation owns silence guidance; required-reply enforcement is separate. */
   silentReplyPromptMode?: SilentReplyPromptMode;
   bootstrapContextMode?: "full" | "lightweight";
@@ -268,6 +270,7 @@ export const AGENT_COMMAND_PUBLIC_INGRESS_DEFAULTS = Object.freeze({
   toolBindings: undefined,
   taskSuggestionDeliveryMode: undefined,
   runtimeContextFragments: undefined,
+  conversationPromptContext: undefined,
   senderIsOwner: false,
   mainRestartRecoveryOwnerLease: undefined,
   mainRestartRecoveryAdmitted: undefined,

@@ -310,18 +310,30 @@ export function resolveTtsSettingsSnapshot(params: {
 export function buildTtsSystemPromptHint(
   cfg: OpenClawConfig,
   agentId: string | undefined,
-  options: { messageToolOnly?: boolean; preparedTtsPreferences: PreparedTtsPreferences },
+  options: {
+    messageToolOnly?: boolean;
+    deliveryContextInTurn?: boolean;
+    preparedTtsPreferences: PreparedTtsPreferences;
+  },
 ): string | undefined;
 /** @deprecated Await api.runtime.tts.buildSystemPromptHintAsync. Bundled callers can pass awaited prepareTtsPreferences(). Final compatibility day: 2026-12-31. Removal in the first January 2027 stable release. */
 export function buildTtsSystemPromptHint(
   cfg: OpenClawConfig,
   agentId?: string,
-  options?: { messageToolOnly?: boolean; preparedTtsPreferences?: PreparedTtsPreferences },
+  options?: {
+    messageToolOnly?: boolean;
+    deliveryContextInTurn?: boolean;
+    preparedTtsPreferences?: PreparedTtsPreferences;
+  },
 ): string | undefined;
 export function buildTtsSystemPromptHint(
   cfg: OpenClawConfig,
   agentId?: string,
-  options?: { messageToolOnly?: boolean; preparedTtsPreferences?: PreparedTtsPreferences },
+  options?: {
+    messageToolOnly?: boolean;
+    deliveryContextInTurn?: boolean;
+    preparedTtsPreferences?: PreparedTtsPreferences;
+  },
 ): string | undefined {
   if (!options?.preparedTtsPreferences) {
     warnPluginSdkDeprecation({
@@ -339,14 +351,17 @@ export function buildTtsSystemPromptHint(
   if (settings.autoMode === "off") {
     return undefined;
   }
+  const deliveryContextInTurn = options?.deliveryContextInTurn === true;
   const structured = options?.messageToolOnly === true;
   const autoHint =
     settings.autoMode === "inbound"
       ? "Only use TTS when the user's last message includes audio/voice."
       : settings.autoMode === "tagged"
-        ? structured
-          ? "Use TTS only through message(action=send) speech fields."
-          : "Only use TTS when you include [[tts:key=value]] directives or a [[tts:text]]...[[/tts:text]] block."
+        ? deliveryContextInTurn
+          ? "Use TTS only through message(action=send) speech fields in message_tool_only mode, or explicit TTS directives in automatic mode."
+          : structured
+            ? "Use TTS only through message(action=send) speech fields."
+            : "Only use TTS when you include [[tts:key=value]] directives or a [[tts:text]]...[[/tts:text]] block."
         : undefined;
   return [
     "Voice (TTS) is enabled.",
@@ -355,12 +370,14 @@ export function buildTtsSystemPromptHint(
       ? `Active TTS persona: ${settings.persona.label ?? settings.persona.id}${settings.persona.description ? ` - ${settings.persona.description}` : ""}.`
       : undefined,
     `Keep spoken text ≤${settings.maxLength} chars to avoid auto-summary (summary ${settings.summarize ? "on" : "off"}).`,
-    structured
+    deliveryContextInTurn || structured
       ? "If workspace context (especially MEMORY.md) tells you not to use TTS or to use a local voice workflow, follow that workspace instruction instead."
       : "If workspace context (especially MEMORY.md) tells you not to use [[tts:...]] or to use a local/non-tagged voice workflow, follow that workspace instruction instead.",
-    structured
-      ? "Use message(action=send) with voiceText and optional voiceProvider/voiceId."
-      : "Use [[tts:...]] and optional [[tts:text]]...[[/tts:text]] to control voice/expressiveness.",
+    deliveryContextInTurn
+      ? "In message_tool_only mode use message(action=send) with voiceText and optional voiceProvider/voiceId. In automatic mode use [[tts:...]] and optional [[tts:text]]...[[/tts:text]] to control voice/expressiveness."
+      : structured
+        ? "Use message(action=send) with voiceText and optional voiceProvider/voiceId."
+        : "Use [[tts:...]] and optional [[tts:text]]...[[/tts:text]] to control voice/expressiveness.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -370,7 +387,11 @@ export function buildTtsSystemPromptHint(
 export async function buildTtsSystemPromptHintAsync(
   cfg: OpenClawConfig,
   agentId?: string,
-  options?: { messageToolOnly?: boolean; preparedTtsPreferences?: PreparedTtsPreferences },
+  options?: {
+    messageToolOnly?: boolean;
+    deliveryContextInTurn?: boolean;
+    preparedTtsPreferences?: PreparedTtsPreferences;
+  },
 ): Promise<string | undefined> {
   const preparedTtsPreferences = await prepareTtsPreferencesForConfig(
     resolveTtsConfig(cfg, agentId),

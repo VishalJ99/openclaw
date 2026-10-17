@@ -247,6 +247,7 @@ export type FollowupRun = {
     | "trustedInternalHandoff"
     | "scheduledToolPolicy"
     | "runtimePluginToolGrant"
+    | "conversationPromptContext"
     | "extraSystemPrompt"
     | "sourceReplyDeliveryMode"
     | "taskSuggestionDeliveryMode"

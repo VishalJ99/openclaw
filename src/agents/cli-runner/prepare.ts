@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ensureSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { prepareConversationPromptContext } from "../../auto-reply/reply/conversation-prompt-context.js";
 import {
   buildHarnessVisibleReplyGuidance,
   messageToolOwnsVisibleReply,
@@ -110,6 +111,7 @@ import {
 } from "../embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import { remapSkillReferencePaths } from "../embedded-agent-runner/sandbox-skills.js";
 import { beginContextEngineLogicalTurn } from "../harness/context-engine-turn-begin.js";
+import { projectRuntimeContextFragments } from "../internal-runtime-context.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import { loadManifestModelCatalog, overlayConfiguredModelCatalog } from "../model-catalog.js";
 import { resolveModelContextWindowProfile } from "../model-context-window.js";
@@ -163,6 +165,7 @@ import {
   createCliCurrentPromptRenderer,
   prepareCliSystemPrompt,
   prepareCliTurnPromptContext,
+  shouldDeliverCliRuntimeFactsInTurn,
 } from "./prompt-context.js";
 import { admitCliRunParams, prepareCliRunModelAuthority } from "./run-admission.js";
 import {
@@ -1546,6 +1549,18 @@ async function prepareCliRunContextWithinReadFence(
         requester: params,
       });
     const requesterProfileId = readRunOperatorAuthority(params)?.profileId;
+    const deliveryContextInTurn = shouldDeliverCliRuntimeFactsInTurn({
+      runtimeFactsInTurn: params.runtimeFactsInTurn,
+      backendId: backendResolved.id,
+      privateContext: executionTarget.kind === "plugin",
+      hookResult: promptBuildHookResult,
+    });
+    const conversationTurnContext = deliveryContextInTurn
+      ? prepareConversationPromptContext(
+          params.extraSystemPrompt ?? "",
+          params.conversationPromptContext,
+        )
+      : undefined;
     const builtSystemPrompt = isControlOperation
       ? ""
       : isSideQuestion
@@ -1556,9 +1571,14 @@ async function prepareCliRunContextWithinReadFence(
             workspaceDir,
             cwd,
             config: params.config,
-            extraSystemPrompt,
-            sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
-            requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
+            extraSystemPrompt: conversationTurnContext?.systemPrompt ?? extraSystemPrompt,
+            deliveryContextInTurn,
+            sourceReplyDeliveryMode: deliveryContextInTurn
+              ? params.sourceReplyDeliveryMode
+              : bindingSourceReplyDeliveryMode,
+            requireExplicitMessageTarget: deliveryContextInTurn
+              ? requireExplicitMessageTarget
+              : bindingRequireExplicitMessageTarget,
             silentReplyPromptMode: params.silentReplyPromptMode,
             runtimeChannel,
             runtimeChatType,
@@ -1664,7 +1684,19 @@ async function prepareCliRunContextWithinReadFence(
         privateContext: executionTarget.kind === "plugin",
         backendId: backendResolved.id,
         runtimeFactsInTurn: params.runtimeFactsInTurn,
-        deliveryGuidance: effectiveReplyGuidance,
+        deliveryGuidance:
+          [
+            ...(conversationTurnContext?.context
+              ? [
+                  projectRuntimeContextFragments([
+                    { kind: "conversation-data", text: conversationTurnContext.context },
+                  ]),
+                ]
+              : []),
+            effectiveReplyGuidance,
+          ]
+            .filter(Boolean)
+            .join("\n\n") || undefined,
         hookResult: promptBuildHookResult,
         prependContext: [
           sessionPromptContext?.durableContext,

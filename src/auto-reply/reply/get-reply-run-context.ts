@@ -25,6 +25,7 @@ import {
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import { normalizeThinkLevel } from "../thinking.js";
 import { applySessionHints } from "./body.js";
+import { buildConversationPromptContext } from "./conversation-prompt-context.js";
 import { resolveTurnModelOverride } from "./dispatch-from-config.harness-defaults.js";
 import { shouldUseReplyFastTestRuntime } from "./get-reply-fast-path.js";
 import {
@@ -34,10 +35,14 @@ import {
   hasReplyTargetContext,
 } from "./get-reply-run-helpers.js";
 import type { RunPreparedReplyParams } from "./get-reply-run.types.js";
-import { buildGroupIntro, buildSourceConversationContext } from "./groups.js";
+import {
+  buildGroupIntro,
+  buildSourceConversationContext,
+  buildSourceConversationFacts,
+} from "./groups.js";
 import { hasInboundMedia } from "./inbound-media.js";
 import {
-  buildInboundMetaSystemPrompt,
+  buildInboundMetaPromptContext,
   buildInboundUserContextPrefix,
   formatActiveGoalContext,
   resolveInboundUserContextPromptJoiner,
@@ -215,11 +220,20 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
   };
   setReplyCompletion("empty");
   const groupSystemPrompt = normalizeOptionalString(promptSessionCtx.GroupSystemPrompt) ?? "";
-  const inboundMetaPrompt = buildInboundMetaSystemPrompt(
+  const inboundMetaContext = buildInboundMetaPromptContext(
     isNewSession ? promptSessionCtx : { ...promptSessionCtx, ThreadStarterBody: undefined },
     cfg,
     { includeFormattingHints: !useFastReplyRuntime },
   );
+  const inboundMetaPrompt = inboundMetaContext.systemPrompt;
+  const conversationPromptContext = buildConversationPromptContext({
+    metadataPrompt: inboundMetaPrompt,
+    metadataContext: inboundMetaContext.context,
+    sourceContextByMode: sourceConversationContextByMode,
+    sourceFacts: buildSourceConversationFacts({
+      sessionCtx: promptSessionCtx,
+    }),
+  });
   const execOverridePromptHint = buildExecOverridePromptHint({
     execOverrides,
     elevatedLevel: resolvedElevatedLevel,
@@ -425,6 +439,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     fullAccessState,
     isFirstTurnInSession,
     extraSystemPromptParts,
+    conversationPromptContext,
     sourceConversationContextByMode,
     sourceConversationContextPromptOffset,
     extraSystemPromptStatic,

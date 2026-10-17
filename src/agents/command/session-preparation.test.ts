@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { prepareConversationPromptContext } from "../../auto-reply/reply/conversation-prompt-context.js";
 import {
   buildSourceConversationContext,
   buildGroupChatContext,
@@ -441,6 +442,21 @@ it.each([
   { deliver: true, replyAccountId: "rich", markup: "markdown_telegram_rich" },
   { deliver: true, replyAccountId: "plain", markup: "markdown" },
   { deliver: false, replyAccountId: undefined, markup: undefined },
+  {
+    deliver: true,
+    replyAccountId: "rich",
+    markup: "markdown_telegram_rich",
+    formatOnly: true,
+    extraSystemPrompt: "",
+  },
+  {
+    deliver: true,
+    replyAccountId: "rich",
+    markup: "markdown_telegram_rich",
+    formatOnly: true,
+    extraSystemPrompt:
+      '### Message Context\n{"schema":"openclaw.inbound_meta.v2","account_id":"legacy"}',
+  },
 ])("uses the delivering account's format once ($deliver, $replyAccountId)", async (testCase) => {
   setActivePluginRegistry(
     createTestRegistry([
@@ -477,22 +493,42 @@ it.each([
         message: "Child finished.",
         deliver: testCase.deliver,
         replyAccountId: testCase.replyAccountId,
+        extraSystemPrompt: testCase.extraSystemPrompt,
         inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle" },
       },
       runContext: { messageChannel: "telegram", currentChannelId: "1222", accountId: "rich" },
       sessionKey: "agent:main:telegram:direct:1222",
       sessionAgentId: "main",
-      sessionEntry: {
-        sessionId: "conversation-id",
-        updatedAt: 1,
-        chatType: "direct",
-        delivery: normalizeSessionDeliveryState({
-          context: { channel: "telegram", to: "1222", accountId: "rich" },
-          origin: { provider: "telegram", surface: "telegram", chatType: "direct" },
-        }),
-      },
+      ...(testCase.formatOnly
+        ? {}
+        : {
+            sessionEntry: {
+              sessionId: "conversation-id",
+              updatedAt: 1,
+              chatType: "direct",
+              delivery: normalizeSessionDeliveryState({
+                context: { channel: "telegram", to: "1222", accountId: "rich" },
+                origin: { provider: "telegram", surface: "telegram", chatType: "direct" },
+              }),
+            },
+          }),
     });
     const prompt = prepared.extraSystemPrompt ?? "";
+    if (testCase.formatOnly) {
+      const projected = prepareConversationPromptContext(
+        prompt,
+        prepared.conversationPromptContext,
+      );
+      expect(projected.systemPrompt).toBe(testCase.extraSystemPrompt);
+      if (testCase.extraSystemPrompt) {
+        expect(projected.context).not.toContain("Current inbound metadata:");
+        expect(projected.systemPrompt).toContain('"account_id":"legacy"');
+      } else {
+        expect(projected.context).toContain("Current inbound metadata: none.");
+      }
+      expect(projected.context).toContain('"text_markup": "markdown_telegram_rich"');
+      return;
+    }
     expect(prompt).toContain('"account_id": "rich"');
     expect(prompt.split("### Delivery Format")).toHaveLength(testCase.deliver ? 2 : 1);
     if (testCase.markup) {

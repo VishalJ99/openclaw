@@ -90,6 +90,7 @@ export function buildCliAgentSystemPrompt(params: {
   preparedGitCoauthorPrompt?: string;
   extraSystemPrompt?: string;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  deliveryContextInTurn?: boolean;
   requireExplicitMessageTarget?: boolean;
   silentReplyPromptMode?: SilentReplyPromptMode;
   runtimeChannel?: string;
@@ -148,6 +149,7 @@ export function buildCliAgentSystemPrompt(params: {
     runtimeCwd,
     extraSystemPrompt: params.extraSystemPrompt,
     sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+    deliveryContextInTurn: params.deliveryContextInTurn,
     requireExplicitMessageTarget: params.requireExplicitMessageTarget,
     silentReplyPromptMode: params.silentReplyPromptMode,
     ownerNumbers: params.ownerNumbers,

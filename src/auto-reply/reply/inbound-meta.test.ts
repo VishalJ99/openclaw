@@ -23,6 +23,7 @@ const EMPTY_CFG = {} as OpenClawConfig;
 // Delivery formatting has its own reply-turn coverage; keep these tests on the metadata block.
 vi.mock("../../infra/outbound/delivery-format-prompt.js", () => ({
   buildDeliveryFormatPrompt: () => undefined,
+  buildDeliveryFormatPromptContext: () => undefined,
 }));
 
 function parseInboundMetaPayload(text: string): Record<string, unknown> {

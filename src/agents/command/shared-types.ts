@@ -5,6 +5,7 @@ import type {
   SourceReplyDeliveryMode,
   TaskSuggestionDeliveryMode,
 } from "../../auto-reply/get-reply-options.types.js";
+import type { ConversationPromptContext } from "../../auto-reply/reply/conversation-prompt-context.js";
 import type { ReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { ChatType } from "../../channels/chat-type.js";
@@ -160,6 +161,7 @@ export type AgentRunInputContext = {
   inputProvenance?: InputProvenance;
   heartbeatEventQueueSessionKey?: string;
   extraSystemPrompt?: string;
+  conversationPromptContext?: ConversationPromptContext;
   images?: ImageContent[];
   imageOrder?: PromptImageOrderEntry[];
   /** Ordered facts represented by attachment text in the current prompt. */
