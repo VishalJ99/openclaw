@@ -70,6 +70,10 @@ import {
   type AgentHarnessPreparedModelProvider,
 } from "./selection-decision.js";
 import {
+  assertHarnessModelPolicySupport,
+  assertPluginHarnessWorkspaceContextSupport,
+} from "./selection-preflight.js";
+import {
   assertPluginHarnessConversationToolPolicySupport,
   resolveAgentHarnessPreparedAuthSupport,
   resolveAgentHarnessPreparedRouteSupport,
@@ -232,6 +236,9 @@ export async function runAgentHarnessAttempt(
           harness: nativeSessionRuntime.harness,
         }
       : selectPreparedAgentHarness(params);
+  if (!selection.builtIn) {
+    assertPluginHarnessWorkspaceContextSupport(params);
+  }
   const harness = selection.harness;
   const nativeOwnsModel = nativeSessionRuntime?.auth === "native";
   const nativeModelPolicySupported = harness.nativeModelPolicySupport === "exact";
@@ -507,21 +514,6 @@ export async function runAgentHarnessAttempt(
   }
   const { contextEngineTerminalAnchor: _contextEngineTerminalAnchor, ...publicResult } = result;
   return copyCoreTtsAttemptResultProvenance(result, publicResult);
-}
-
-function assertHarnessModelPolicySupport(harness: AgentHarness, params: EmbeddedRunAttemptParams) {
-  const authority = readRunOperatorAuthority(params);
-  authority?.assertCurrent();
-  if (
-    !isBuiltInOpenClawAgentHarness(harness) &&
-    authority?.modelPolicy &&
-    harness.nativeModelPolicySupport !== "exact"
-  ) {
-    throw new AgentHarnessPreflightError(
-      `Agent harness ${harness.id} cannot enforce your operator role's model policy. Choose a compatible runtime or ask a gateway administrator to update the harness.`,
-    );
-  }
-  return authority;
 }
 
 function selectPreparedAgentHarness(

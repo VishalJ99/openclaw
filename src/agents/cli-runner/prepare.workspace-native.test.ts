@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { executeClaudeCli } from "../../../extensions/anthropic/cli.runtime.js";
+import { buildAnthropicCliBackend } from "../../../extensions/anthropic/api.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -82,6 +82,7 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
   const { dir, sessionTarget: target } = fixture.session;
   const script = path.join(dir, "native-protocol.mjs");
   await fs.writeFile(script, PROTOCOL);
+  const nativeBackend = buildAnthropicCliBackend();
   const backend = {
     ...buildDefaultTestCliBackend(),
     id: "claude-cli",
@@ -92,10 +93,24 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
       output: "jsonl" as const,
       resumeArgs: ["--resume", "{sessionId}", "--print"],
     },
-    prepareExecution: () => ({
-      execute: (context: Parameters<typeof executeClaudeCli>[0]) =>
-        executeClaudeCli({ ...context, args: [script, ...context.args], timeoutMs: 10_000 }),
-    }),
+    prepareExecution: async (
+      context: Parameters<NonNullable<typeof nativeBackend.prepareExecution>>[0],
+    ) => {
+      const prepared = await nativeBackend.prepareExecution?.(context);
+      const execute = prepared?.execute;
+      if (!execute) {
+        throw new Error("Anthropic backend did not prepare its managed transport");
+      }
+      return {
+        ...prepared,
+        execute: (executionContext: Parameters<typeof execute>[0]) =>
+          execute({
+            ...executionContext,
+            args: [script, ...executionContext.args],
+            timeoutMs: 10_000,
+          }),
+      };
+    },
   };
   cliBackendsTesting.setDepsForTest({
     resolvePluginSetupCliBackend: () => undefined,

@@ -113,6 +113,20 @@ describe("CLI durable session context", () => {
     }
   });
 
+  it("rejects workspace snapshots at unsupported CLI admission", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [buildDefaultTestCliBackend()],
+    });
+    await expect(
+      fixture.prepare({
+        config: { agents: { defaults: { workspaceContextRefresh: "compaction" } } },
+      }),
+    ).rejects.toThrow(
+      "workspaceContextRefresh=compaction requires the managed local Claude CLI harness",
+    );
+  });
+
   it("claims metadata ownership through the actual admitted CLI entry without an injected scope", async () => {
     const target = fixture.session.sessionTarget;
     const config = { agents: { defaults: { workspaceContextRefresh: "compaction" as const } } };

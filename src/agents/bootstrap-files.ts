@@ -299,8 +299,6 @@ type BootstrapFileResolutionParams = {
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
   readOnlyState?: boolean;
-  /** A lifecycle-capable harness owns durable snapshots and invokes fresh boundary loads. */
-  lifecycleWorkspaceContext?: boolean;
 };
 
 // Diagnostics project declared files without executing registered hook handlers.
@@ -316,14 +314,6 @@ export async function resolveBootstrapFilesForPreparation(
 export async function resolveBootstrapFilesForRun(
   params: BootstrapFileResolutionParams,
 ): Promise<WorkspaceBootstrapFile[]> {
-  if (
-    resolveWorkspaceContextRefresh(params.config, params.agentId) === "compaction" &&
-    !params.lifecycleWorkspaceContext
-  ) {
-    throw new Error(
-      "workspaceContextRefresh=compaction requires a supported lifecycle harness (managed local Claude CLI or built-in local embedded compaction).",
-    );
-  }
   return resolveBootstrapFiles(params, "registered");
 }
 

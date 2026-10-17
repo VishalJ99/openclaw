@@ -87,7 +87,6 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
       warn: bootstrapWarn,
       contextMode: attempt.bootstrapContextMode,
       runKind: attempt.bootstrapContextRunKind,
-      lifecycleWorkspaceContext,
     });
   const loadFiles = async () => {
     const bootstrapFiles = await resolveWorkspaceBootstrapFiles(bootstrapWorkspaceDir);

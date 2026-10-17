@@ -695,7 +695,6 @@ async function prepareCliRunContextWithinReadFence(
   }
   const loadWorkspaceContext = () =>
     resolveBootstrapContextForRunImpl({
-      lifecycleWorkspaceContext,
       workspaceDir: params.bootstrapWorkspaceDir ?? workspaceDir,
       config: params.config,
       sessionKey: params.sessionKey,

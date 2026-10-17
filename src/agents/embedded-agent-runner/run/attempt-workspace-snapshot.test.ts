@@ -136,7 +136,6 @@ it("shares raw file snapshots across embedded and CLI rendering, then restores f
               resolveBootstrapContextForRun({
                 workspaceDir: state.workspaceDir,
                 config,
-                lifecycleWorkspaceContext: true,
               }),
             render: (files) => buildBootstrapContextForFiles(files, {}),
           });
