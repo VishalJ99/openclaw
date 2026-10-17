@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -203,8 +204,22 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
   const receipt = async () => fs.readFile(path.join(dir, "native-hook.receipts"), "utf8");
   const first = await prepare(alice.id);
   await first.run(() => executePreparedCliRun(first.prepared));
-  expect(await receipt()).toContain(raw);
-  expect(await receipt()).toContain("ALICE_PRIVATE");
+  const allowedReceipt = await receipt();
+  expect(allowedReceipt).toContain(raw);
+  expect(allowedReceipt).toContain("ALICE_PRIVATE");
+  const allowedHook: string = JSON.parse(allowedReceipt.trim()).response.response.hookSpecificOutput
+    .additionalContext;
+  console.info(
+    "WORKSPACE_TRANSPORT_RECEIPT",
+    JSON.stringify({
+      transport: "synthetic-native-stdio",
+      stage: "allowed-initial",
+      receivedContextChars: allowedHook.length,
+      receivedContextSha256: createHash("sha256").update(allowedHook).digest("hex"),
+      currentProfilePresent: allowedHook.includes("ALICE_PRIVATE"),
+      frozenWorkspacePresent: allowedHook.includes(raw),
+    }),
+  );
   // Existing v1 stored rendering may exceed today's budget; only its raw files are authoritative.
   const manager = await SessionManager.openAsync(target, dir);
   const saved = manager
@@ -271,19 +286,30 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
     prepareContextFilesForPrompt(currentFiles),
   ).join("\n");
   const receivedProject = String(hook).slice(String(hook).indexOf("# Project Context"));
-  console.info(
-    "Synthetic native workspace budget receipt",
-    JSON.stringify({
-      perFileChars: currentFiles.map((file) => [path.basename(file.path), file.content.length]),
-      totalFileChars: currentFiles.reduce((total, file) => total + file.content.length, 0),
-      receivedProject,
-    }),
-  );
   expect(Math.max(...currentFiles.map((file) => file.content.length))).toBeLessThanOrEqual(1000);
   expect(currentFiles.reduce((total, file) => total + file.content.length, 0)).toBeLessThanOrEqual(
     1200,
   );
   expect(receivedProject).toContain(expectedProject);
+  console.info(
+    "WORKSPACE_TRANSPORT_RECEIPT",
+    JSON.stringify({
+      transport: "synthetic-native-stdio",
+      stage: "same-profile-restart",
+      receivedContextChars: String(hook).length,
+      receivedContextSha256: createHash("sha256").update(String(hook)).digest("hex"),
+      renderedPerFileChars: currentFiles.map((file) => [
+        path.basename(file.path),
+        file.content.length,
+      ]),
+      renderedTotalFileChars: currentFiles.reduce((total, file) => total + file.content.length, 0),
+      receivedMatchesCurrentRenderer: receivedProject.includes(expectedProject),
+      priorStoredRenderingAbsent: !limited.includes("LEGACY_UNBOUNDED"),
+      editedDiskAbsent: !limited.includes("EDITED_ON_DISK"),
+      nativeResume:
+        sameProfileArgs.includes("--resume") && sameProfileArgs.includes("synthetic-native"),
+    }),
+  );
   await fs.rm(path.join(dir, "native-hook.receipts"));
   const reassigned = await prepare(bob.id, 20_000, 30_000, binding);
   expect(reassigned.prepared.reusableCliSession).toEqual({
@@ -296,18 +322,39 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
       resolveCliSessionId(reassigned.prepared.reusableCliSession),
     ),
   );
-  expect(await receipt()).toContain("BOB_PRIVATE");
-  expect(await receipt()).not.toContain("ALICE_PRIVATE");
-  const reassignedArgs: string[] = JSON.parse((await receipt()).trim()).argv;
+  const reassignedReceipt = await receipt();
+  expect(reassignedReceipt).toContain("BOB_PRIVATE");
+  expect(reassignedReceipt).not.toContain("ALICE_PRIVATE");
+  const reassignedRecord = JSON.parse(reassignedReceipt.trim());
+  const reassignedArgs: string[] = reassignedRecord.argv;
+  const reassignedHook: string =
+    reassignedRecord.response.response.hookSpecificOutput.additionalContext;
   expect(reassignedArgs).not.toContain("--resume");
   expect(reassignedArgs).not.toContain("synthetic-native");
+  console.info(
+    "WORKSPACE_TRANSPORT_RECEIPT",
+    JSON.stringify({
+      transport: "synthetic-native-stdio",
+      stage: "profile-reassigned",
+      receivedContextChars: reassignedHook.length,
+      receivedContextSha256: createHash("sha256").update(reassignedHook).digest("hex"),
+      currentProfilePresent: reassignedHook.includes("BOB_PRIVATE"),
+      priorProfileAbsent: !reassignedHook.includes("ALICE_PRIVATE"),
+      nativeResume: reassignedArgs.includes("--resume"),
+      priorNativeSessionArgAbsent: !reassignedArgs.includes("synthetic-native"),
+    }),
+  );
   await fs.rm(path.join(dir, "native-hook.receipts"));
   let release!: () => void;
   refreshRelease = new Promise<void>((resolve) => {
     release = resolve;
   });
+  let refreshWasEntered = false;
   const entered = new Promise<void>((resolve) => {
-    refreshEntered = resolve;
+    refreshEntered = () => {
+      refreshWasEntered = true;
+      resolve();
+    };
   });
   reassigned.prepared.params.prompt = "COMPACT_FIXTURE";
   const execution = reassigned.run(() =>
@@ -324,8 +371,31 @@ it("bounds legacy raw snapshots at restarted native output, isolates reassignmen
     }),
   ]);
   reassigned.admission.close();
+  const admissionClosedBeforeRelease = true;
   release();
   await rejected;
-  await expect(receipt()).rejects.toMatchObject({ code: "ENOENT" });
+  const executionRejected = await execution.then(
+    () => false,
+    () => true,
+  );
+  const revokedReceipt = await receipt().then(
+    () => ({ exists: true }),
+    (error: unknown) => {
+      expect(error).toMatchObject({ code: "ENOENT" });
+      return { exists: false };
+    },
+  );
+  expect(revokedReceipt).toEqual({ exists: false });
+  console.info(
+    "WORKSPACE_TRANSPORT_RECEIPT",
+    JSON.stringify({
+      transport: "synthetic-native-stdio",
+      stage: "revoked-compact-refresh",
+      refreshEntered: refreshWasEntered,
+      admissionClosedBeforeRelease,
+      executionRejected,
+      childReceiptExists: revokedReceipt.exists,
+    }),
+  );
   expect(loadSessionEntryReadOnly(target)?.cliHistoryBoundary).toBeUndefined();
 });

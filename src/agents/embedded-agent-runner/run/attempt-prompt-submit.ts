@@ -92,7 +92,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
   assertHostActive?: SessionSourceAssertion;
   getUserTranscriptContexts?: () => readonly UserTranscriptContext[] | undefined;
   withTranscriptWrite?: <T>(write: () => Promise<T>) => Promise<T>;
-  /** Returns work only when a stale optional restriction must be withdrawn. */
+  /** Refreshes owned workspace context before a foreground model request. */
   preparePrimaryModelRequest?: () =>
     | Promise<
         () => Pick<Parameters<StreamFn>[1], "tools" | "systemPrompt"> & {
@@ -204,11 +204,11 @@ export async function submitEmbeddedAttemptPrompt(input: {
               ? input.preparePrimaryModelRequest?.()
               : undefined;
             if (preparation) {
-              const readRestoredContext = await preparation;
+              const readPreparedContext = await preparation;
               assertRequestCurrent();
               // Read the live permitted surface only after all awaited preparation.
-              // Do not reuse the tools snapshot captured before the restoration.
-              const projection = readRestoredContext().promptUpdate;
+              // Do not reuse the tools snapshot captured before workspace preparation.
+              const projection = readPreparedContext().promptUpdate;
               if (projection?.update) {
                 await activeSession[agentSessionQueuePromptContext](projection.update, {
                   delivery: "current-request",
@@ -233,7 +233,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
                 await input.persistToolResultProjections();
                 assertRequestCurrent();
               }
-              const { tools, systemPrompt } = readRestoredContext();
+              const { tools, systemPrompt } = readPreparedContext();
               requestContext = { ...requestContext, tools, systemPrompt };
             }
           };

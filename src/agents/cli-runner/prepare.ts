@@ -330,6 +330,8 @@ async function prepareCliRunContextWithinReadFence(
     backendId: backendResolved.id,
     bundleMcp: backendResolved.bundleMcp,
     canEnforceExactToolAvailability,
+    projectNativeToolAuthority: backendResolved.projectNativeToolAuthority,
+    sideQuestionToolMode: backendResolved.sideQuestionToolMode,
     isSideQuestion,
     skipsTurnPreparation,
   });

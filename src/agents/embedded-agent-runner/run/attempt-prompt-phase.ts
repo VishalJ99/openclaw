@@ -203,9 +203,9 @@ export async function runEmbeddedAttemptPromptPhase(
       runAbortSignal: input.runAbortController.signal,
       hasBaselineTools: promptToolPolicy.hasBaselineTools,
       setActiveSessionSystemPrompt,
-      applyPromptBuildToolsAllow: (toolsAllow, decisionIsCurrent) => {
+      applyPromptBuildToolsAllow: (toolsAllow, pruneForDecision) => {
         // Hook authority follows reachable capabilities, not just provider-visible controls.
-        return promptToolPolicy.apply(toolsAllow, decisionIsCurrent).callableToolNames;
+        return promptToolPolicy.apply(toolsAllow, pruneForDecision).callableToolNames;
       },
       prepareSystemPrompt: async (currentSystemPrompt) => {
         const refresh = await prepared.systemPrompt.prepareToolPrompt?.(
@@ -426,6 +426,7 @@ export async function runEmbeddedAttemptPromptPhase(
 
     if (!state.skipPromptSubmission) {
       let workspacePromptRefreshPending = false;
+      const refreshWorkspace = prepared.bootstrap.refreshWorkspaceContext;
       await submitEmbeddedAttemptPrompt({
         ...(promptBuildAppendContext ? { appendContext: promptBuildAppendContext } : {}),
         attempt,
@@ -497,68 +498,50 @@ export async function runEmbeddedAttemptPromptPhase(
         assertHostActive: promptAssembly.assertHostActive,
         withTranscriptWrite,
         getUserTranscriptContexts: sessionRuntime.boundary.getUserTranscriptContexts,
-        preparePrimaryModelRequest: () => {
-          const preparePrompt = async () => {
-            const refresh = await prepared.systemPrompt.prepareToolPrompt?.(
-              promptToolPolicy.current.effectiveTools,
-            );
-            input.runAbortController.signal.throwIfAborted();
-            promptAssembly.assertHostActive?.();
-            const refreshedPrompt = refresh?.(activeSession.agent.state.systemPrompt);
-            const projection =
-              refreshedPrompt !== undefined && sessionRuntime.prepareSystemPromptUpdate
-                ? await sessionRuntime.prepareSystemPromptUpdate(
-                    refreshedPrompt,
-                    refresh?.freshlyRendered === true,
-                  )
-                : undefined;
-            if (refreshedPrompt !== undefined && !projection) {
-              setActiveSessionSystemPrompt(refreshedPrompt);
-              workspacePromptRefreshPending = false;
-            }
-            return () => ({
-              tools: activeSession.agent.state.tools.slice(),
-              systemPrompt: projection?.systemPrompt ?? activeSession.agent.state.systemPrompt,
-              ...(projection
-                ? {
-                    promptUpdate: {
-                      update: projection.update,
-                      commit: () => {
-                        projection.commit();
-                        setActiveSessionSystemPrompt(projection.systemPrompt);
-                        workspacePromptRefreshPending = false;
+        preparePrimaryModelRequest: refreshWorkspace
+          ? async () => {
+              workspacePromptRefreshPending ||= await refreshWorkspace();
+              if (!workspacePromptRefreshPending) {
+                return () => ({
+                  tools: activeSession.agent.state.tools.slice(),
+                  systemPrompt: activeSession.agent.state.systemPrompt,
+                });
+              }
+              const refresh = await prepared.systemPrompt.prepareToolPrompt?.(
+                promptToolPolicy.current.effectiveTools,
+              );
+              input.runAbortController.signal.throwIfAborted();
+              promptAssembly.assertHostActive?.();
+              const refreshedPrompt = refresh?.(activeSession.agent.state.systemPrompt);
+              const projection =
+                refreshedPrompt !== undefined && sessionRuntime.prepareSystemPromptUpdate
+                  ? await sessionRuntime.prepareSystemPromptUpdate(
+                      refreshedPrompt,
+                      refresh?.freshlyRendered === true,
+                    )
+                  : undefined;
+              if (refreshedPrompt !== undefined && !projection) {
+                setActiveSessionSystemPrompt(refreshedPrompt);
+                workspacePromptRefreshPending = false;
+              }
+              return () => ({
+                tools: activeSession.agent.state.tools.slice(),
+                systemPrompt: projection?.systemPrompt ?? activeSession.agent.state.systemPrompt,
+                ...(projection
+                  ? {
+                      promptUpdate: {
+                        update: projection.update,
+                        commit: () => {
+                          projection.commit();
+                          setActiveSessionSystemPrompt(projection.systemPrompt);
+                          workspacePromptRefreshPending = false;
+                        },
                       },
-                    },
-                  }
-                : {}),
-            });
-          };
-          const prepareSelection = () =>
-            promptToolPolicy.prepareForDispatch(async () => {
-              promptAssembly.decisionPrefilter.restrictionApplied = false;
-              promptAssembly.decisionPrefilter.status = "retained";
-              promptAssembly.decisionPrefilter.reason = "selection-changed";
-              return preparePrompt();
-            });
-          const refreshWorkspace = prepared.bootstrap.refreshWorkspaceContext;
-          if (!refreshWorkspace) {
-            return prepareSelection();
-          }
-          return (async () => {
-            workspacePromptRefreshPending ||= await refreshWorkspace();
-            const selection = prepareSelection();
-            if (selection) {
-              return selection;
+                    }
+                  : {}),
+              });
             }
-            if (workspacePromptRefreshPending) {
-              return preparePrompt();
-            }
-            return () => ({
-              tools: activeSession.agent.state.tools.slice(),
-              systemPrompt: activeSession.agent.state.systemPrompt,
-            });
-          })();
-        },
+          : undefined,
         onSteeringAcknowledged: () => {
           leasedSteering = undefined;
         },
